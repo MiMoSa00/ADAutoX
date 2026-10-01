@@ -1,0 +1,18 @@
+# Security & Sensitive Files
+user-passwords.clixml
+*.clixml
+
+# Generated Runtime Logs & Reports
+ADAutoX-Audit.jsonl
+ADAutoX-Provisioning-Report.csv
+*.log
+
+# Temp & Scratch
+scratch/
+*.tmp
+
+# OS & IDE Files
+.ds_store
+Thumbs.db
+.vscode/
+.idea/
