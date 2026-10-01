@@ -14,7 +14,7 @@ function Show-ADAutoXMenu {
     Write-Host "                ADAutoX Enterprise Active Directory Framework            " -ForegroundColor Cyan
     Write-Host "==========================================================================" -ForegroundColor Cyan
     Write-Host "  1. Preview Provisioning (-WhatIf Mode)" -ForegroundColor Yellow
-    Write-Host "  2. Execute Live Bulk Provisioning" -ForegroundColor Green
+    Write-Host "  2. Execute Live Bulk Provisioning (Transactional Rollback Enabled)" -ForegroundColor Green
     Write-Host "  3. View / Filter Audit Logs (JSONL Reader)" -ForegroundColor White
     Write-Host "  4. Execute Security Posture Scan" -ForegroundColor White
     Write-Host "  5. Manage User Lifecycle (Enable, Disable, Unlock, Reset Password)" -ForegroundColor White
@@ -31,16 +31,16 @@ while ($true) {
     switch ($choice) {
         '1' {
             Write-Host "`n[Preview Provisioning Mode]" -ForegroundColor Yellow
-            $count = Read-Host "Enter number of accounts to preview (Default: 5)"
-            if (-not $count) { $count = 5 }
+            $countInput = Read-Host "Enter number of accounts to preview (Default: 5)"
+            $count = if ($countInput) { [int]$countInput } else { 5 }
             powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Invoke-ADAutoXProvision.ps1') -AccountCount $count -WhatIf
             Read-Host "`nPress Enter to return to menu..."
         }
         '2' {
             Write-Host "`n[Live Bulk Provisioning Mode]" -ForegroundColor Green
-            $count = Read-Host "Enter number of accounts to provision (Default: 10)"
-            if (-not $count) { $count = 10 }
-            powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Invoke-ADAutoXProvision.ps1') -AccountCount $count
+            $countInput = Read-Host "Enter number of accounts to provision (Default: 20)"
+            $count = if ($countInput) { [int]$countInput } else { 20 }
+            powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Invoke-ADAutoXProvision.ps1') -AccountCount $count -RollbackOnFailure
             Read-Host "`nPress Enter to return to menu..."
         }
         '3' {

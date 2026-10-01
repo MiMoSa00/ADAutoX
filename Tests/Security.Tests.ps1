@@ -17,13 +17,24 @@ function Assert-True {
 Write-Host "`n=== Running ADAutoX.Security Unit Tests ===" -ForegroundColor Cyan
 
 # Test Random Password Generator
-$pwd = New-ADAutoXRandomPassword -Length 24
-Assert-True ($pwd.Length -eq 24) 'Random password matches requested length of 24'
-Assert-True (Test-ADAutoXPasswordComplexity -PasswordText $pwd) 'Generated random password passes complexity requirements'
+$testPassword = New-ADAutoXRandomPassword -Length 24
+Assert-True ($testPassword.Length -eq 24) 'Random password matches requested length of 24'
+Assert-True (Test-ADAutoXPasswordComplexity -PasswordText $testPassword) 'Generated random password passes complexity requirements'
 
 # Test Password Complexity Checker
 Assert-True (Test-ADAutoXPasswordComplexity -PasswordText 'Password123!') 'Complex password evaluates to true'
 Assert-True (-not (Test-ADAutoXPasswordComplexity -PasswordText 'simple')) 'Simple lowercase password evaluates to false'
+
+# Test Cross-Platform ACL Protection
+$testAclFile = Join-Path $PSScriptRoot 'test-acl-file.txt'
+"test content" | Set-Content -Path $testAclFile -Encoding UTF8
+try {
+    Protect-ADAutoXFileAcl -Path $testAclFile
+    Assert-True (Test-Path -LiteralPath $testAclFile) 'Protect-ADAutoXFileAcl completes safely cross-platform without exception'
+}
+finally {
+    if (Test-Path -LiteralPath $testAclFile) { Remove-Item -LiteralPath $testAclFile -Force }
+}
 
 # Test DPAPI Credential Export
 $testExportPath = Join-Path $PSScriptRoot 'test-creds.clixml'

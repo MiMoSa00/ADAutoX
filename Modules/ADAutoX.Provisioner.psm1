@@ -2,11 +2,47 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:Ledger = [System.Collections.Generic.List[psobject]]::new()
+$script:LedgerFilePath = Join-Path $env:TEMP 'ADAutoX-Ledger.json'
+
+function Save-ADAutoXLedgerToDisk {
+    [CmdletBinding()]
+    param()
+    try {
+        $json = $script:Ledger | ConvertTo-Json -Depth 5
+        Set-Content -Path $script:LedgerFilePath -Value $json -Encoding UTF8 -Force
+    }
+    catch {
+        # Best-effort disk persistence for rollback resilience across crashes
+    }
+}
+
+function Load-ADAutoXLedgerFromDisk {
+    [CmdletBinding()]
+    param()
+    if (Test-Path -LiteralPath $script:LedgerFilePath -PathType Leaf) {
+        try {
+            $json = Get-Content -LiteralPath $script:LedgerFilePath -Raw -Encoding UTF8
+            if (-not [string]::IsNullOrWhiteSpace($json)) {
+                $items = $json | ConvertFrom-Json
+                $script:Ledger.Clear()
+                foreach ($item in $items) {
+                    $script:Ledger.Add($item)
+                }
+            }
+        }
+        catch {
+            # Failed to read disk ledger
+        }
+    }
+}
 
 function Initialize-ADAutoXLedger {
     [CmdletBinding()]
     param()
     $script:Ledger.Clear()
+    if (Test-Path -LiteralPath $script:LedgerFilePath -PathType Leaf) {
+        Remove-Item -LiteralPath $script:LedgerFilePath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Get-ADAutoXLedger {
@@ -37,6 +73,8 @@ function Add-ADAutoXLedgerEntry {
         CreatedByThisRun  = $CreatedByThisRun
         Timestamp         = (Get-Date).ToUniversalTime().ToString('o')
     })
+
+    Save-ADAutoXLedgerToDisk
 }
 
 function Invoke-ADAutoXLedgerRollback {
@@ -44,6 +82,11 @@ function Invoke-ADAutoXLedgerRollback {
     param(
         [string]$LogPath = ''
     )
+
+    # If in-memory ledger is empty, attempt to recover ledger from disk (crash resilience)
+    if ($script:Ledger.Count -eq 0) {
+        Load-ADAutoXLedgerFromDisk
+    }
 
     $createdItems = @($script:Ledger | Where-Object { $_.CreatedByThisRun -eq $true })
     if ($createdItems.Count -eq 0) {
@@ -60,10 +103,13 @@ function Invoke-ADAutoXLedgerRollback {
             try {
                 if (Get-Command Remove-ADUser -ErrorAction SilentlyContinue) {
                     Remove-ADUser -Identity $user.DistinguishedName -Confirm:$false -ErrorAction Stop
+                    Write-ADAutoXConsole -Message "Rolled back User: $($user.SamAccountName)" -Level Success
+                    if ($LogPath) {
+                        Write-ADAutoXLogRecord -LogPath $LogPath -Action 'RollbackUser' -Target $user.DistinguishedName -Status 'Succeeded' -Message 'User account removed during rollback.'
+                    }
                 }
-                Write-ADAutoXConsole -Message "Rolled back User: $($user.SamAccountName)" -Level Success
-                if ($LogPath) {
-                    Write-ADAutoXLogRecord -LogPath $LogPath -Action 'RollbackUser' -Target $user.DistinguishedName -Status 'Succeeded' -Message 'User account removed during rollback.'
+                else {
+                    Write-ADAutoXConsole -Message "Skipped rolling back User '$($user.SamAccountName)': Cmdlet 'Remove-ADUser' not available." -Level Warning
                 }
             }
             catch {
@@ -78,10 +124,13 @@ function Invoke-ADAutoXLedgerRollback {
             try {
                 if (Get-Command Remove-ADGroup -ErrorAction SilentlyContinue) {
                     Remove-ADGroup -Identity $group.DistinguishedName -Confirm:$false -ErrorAction Stop
+                    Write-ADAutoXConsole -Message "Rolled back Group: $($group.SamAccountName)" -Level Success
+                    if ($LogPath) {
+                        Write-ADAutoXLogRecord -LogPath $LogPath -Action 'RollbackGroup' -Target $group.DistinguishedName -Status 'Succeeded' -Message 'Group removed during rollback.'
+                    }
                 }
-                Write-ADAutoXConsole -Message "Rolled back Group: $($group.SamAccountName)" -Level Success
-                if ($LogPath) {
-                    Write-ADAutoXLogRecord -LogPath $LogPath -Action 'RollbackGroup' -Target $group.DistinguishedName -Status 'Succeeded' -Message 'Group removed during rollback.'
+                else {
+                    Write-ADAutoXConsole -Message "Skipped rolling back Group '$($group.SamAccountName)': Cmdlet 'Remove-ADGroup' not available." -Level Warning
                 }
             }
             catch {
@@ -97,10 +146,13 @@ function Invoke-ADAutoXLedgerRollback {
                 if (Get-Command Remove-ADOrganizationalUnit -ErrorAction SilentlyContinue) {
                     Set-ADOrganizationalUnit -Identity $ou.DistinguishedName -ProtectedFromAccidentalDeletion $false -ErrorAction Stop
                     Remove-ADOrganizationalUnit -Identity $ou.DistinguishedName -Recursive -Confirm:$false -ErrorAction Stop
+                    Write-ADAutoXConsole -Message "Rolled back OU: $($ou.DistinguishedName)" -Level Success
+                    if ($LogPath) {
+                        Write-ADAutoXLogRecord -LogPath $LogPath -Action 'RollbackOU' -Target $ou.DistinguishedName -Status 'Succeeded' -Message 'OU removed during rollback.'
+                    }
                 }
-                Write-ADAutoXConsole -Message "Rolled back OU: $($ou.DistinguishedName)" -Level Success
-                if ($LogPath) {
-                    Write-ADAutoXLogRecord -LogPath $LogPath -Action 'RollbackOU' -Target $ou.DistinguishedName -Status 'Succeeded' -Message 'OU removed during rollback.'
+                else {
+                    Write-ADAutoXConsole -Message "Skipped rolling back OU '$($ou.DistinguishedName)': Cmdlet 'Remove-ADOrganizationalUnit' not available." -Level Warning
                 }
             }
             catch {
@@ -108,6 +160,8 @@ function Invoke-ADAutoXLedgerRollback {
             }
         }
     }
+
+    Initialize-ADAutoXLedger
 }
 
 function Invoke-ADAutoXPreflight {
@@ -126,81 +180,129 @@ function Invoke-ADAutoXPreflight {
         [string]$DomainDN,
 
         [Parameter(Mandatory = $true)]
-        [string]$NetBIOSName
+        [string]$NetBIOSName,
+
+        [string[]]$SampleNames = @()
     )
 
     Write-ADAutoXConsole -Message 'Phase 1: Preflight Validation (Non-mutating)' -Level Phase
     $checks = [System.Collections.Generic.List[psobject]]::new()
 
-    # If RSAT / Active Directory module cmdlets are not present on local machine (e.g. standalone test PC), simulate preflight
+    # If RSAT / Active Directory module cmdlets are not present on local machine, simulate preflight
     if (-not (Get-Command Get-ADOrganizationalUnit -ErrorAction SilentlyContinue)) {
         Write-ADAutoXConsole -Message "[Offline/Preview] Active Directory module not present locally. Simulating preflight checks." -Level Warning
         $checks.Add([pscustomobject]@{
             Name    = 'Company OU'
             Status  = 'NeedsAttention'
-            Details = "Company OU '$CompanyOuName' will be created during Phase 2."
+            Details = "Company OU '$CompanyOuName' will be evaluated during Phase 2."
         })
         $checks.Add([pscustomobject]@{
             Name    = 'Staff OU'
             Status  = 'NeedsAttention'
-            Details = "Staff OU '$StaffOuName' will be created during Phase 2."
+            Details = "Staff OU '$StaffOuName' will be evaluated during Phase 2."
         })
         foreach ($dept in $Departments) {
             $checks.Add([pscustomobject]@{
                 Name    = "Department Structure: $dept"
-                Status  = 'Passed'
-                Details = "Validated target scope for $dept."
+                Status  = 'NeedsAttention'
+                Details = "Department OU '$dept' will be evaluated during Phase 2."
             })
         }
         $summary = [pscustomobject]@{
-            PassedCount         = @($checks | Where-Object { $_.Status -eq 'Passed' }).Count
-            NeedsAttentionCount = @($checks | Where-Object { $_.Status -eq 'NeedsAttention' }).Count
+            PassedCount         = 0
+            NeedsAttentionCount = $checks.Count
+            CollisionCount      = 0
             Checks              = $checks.ToArray()
         }
-        Write-ADAutoXConsole -Message "Preflight completed: $($summary.PassedCount) passed, $($summary.NeedsAttentionCount) pending creation." -Level Info
+        Write-ADAutoXConsole -Message "Preflight completed: $($summary.NeedsAttentionCount) pending creation/validation." -Level Info
         return $summary
     }
 
-    # Check Root Company OU
-    $safeCompany = ConvertTo-ADLdapFilter -Value $CompanyOuName
-    $companyOUs = @(Get-ADOrganizationalUnit -LDAPFilter "(ou=$safeCompany)" -SearchBase $DomainDN -SearchScope OneLevel -ErrorAction Stop)
-    
-    $companyExists = $companyOUs.Count -eq 1
+    # 1. Check Root Company OU
+    $safeCompanyFilter = ConvertTo-ADLdapFilter -Value $CompanyOuName
+    $companyOUs = @(Get-ADOrganizationalUnit -LDAPFilter "(ou=$safeCompanyFilter)" -SearchBase $DomainDN -SearchScope OneLevel -ErrorAction SilentlyContinue)
+    $companyExists = $companyOUs.Count -gt 0
+
     $checks.Add([pscustomobject]@{
         Name    = 'Company OU'
         Status  = if ($companyExists) { 'Passed' } else { 'NeedsAttention' }
-        Details = if ($companyExists) { "Root OU '$CompanyOuName' exists." } else { "Root OU '$CompanyOuName' will be created." }
+        Details = if ($companyExists) { "Root OU '$CompanyOuName' already exists in AD (will not be created/ledgered)." } else { "Root OU '$CompanyOuName' does not exist; will be created." }
     })
 
-    # Check Staff OU
+    # 2. Check Staff OU
     $staffExists = $false
     if ($companyExists) {
-        $safeStaff = ConvertTo-ADLdapFilter -Value $StaffOuName
-        $staffOUs = @(Get-ADOrganizationalUnit -LDAPFilter "(ou=$safeStaff)" -SearchBase $companyOUs[0].DistinguishedName -SearchScope OneLevel -ErrorAction Stop)
-        $staffExists = $staffOUs.Count -eq 1
+        $safeStaffFilter = ConvertTo-ADLdapFilter -Value $StaffOuName
+        $staffOUs = @(Get-ADOrganizationalUnit -LDAPFilter "(ou=$safeStaffFilter)" -SearchBase $companyOUs[0].DistinguishedName -SearchScope OneLevel -ErrorAction SilentlyContinue)
+        $staffExists = $staffOUs.Count -gt 0
     }
     $checks.Add([pscustomobject]@{
         Name    = 'Staff OU'
         Status  = if ($staffExists) { 'Passed' } else { 'NeedsAttention' }
-        Details = if ($staffExists) { "Staff OU '$StaffOuName' exists." } else { "Staff OU '$StaffOuName' will be created." }
+        Details = if ($staffExists) { "Staff OU '$StaffOuName' already exists in AD." } else { "Staff OU '$StaffOuName' will be created." }
     })
 
-    # Check Department OUs & Groups
+    # 3. Check Department OUs & Groups
+    $companyDN = "OU=$(ConvertTo-ADDistinguishedNameValue -Value $CompanyOuName),$DomainDN"
+    $staffDN   = "OU=$(ConvertTo-ADDistinguishedNameValue -Value $StaffOuName),$companyDN"
+
     foreach ($dept in $Departments) {
+        $safeDeptFilter = ConvertTo-ADLdapFilter -Value $dept
+        $deptOUs = if ($staffExists) { @(Get-ADOrganizationalUnit -LDAPFilter "(ou=$safeDeptFilter)" -SearchBase $staffDN -SearchScope OneLevel -ErrorAction SilentlyContinue) } else { @() }
+        $deptExists = $deptOUs.Count -gt 0
+
         $checks.Add([pscustomobject]@{
-            Name    = "Department Structure: $dept"
-            Status  = 'Passed'
-            Details = "Validated target scope for $dept."
+            Name    = "Department OU: $dept"
+            Status  = if ($deptExists) { 'Passed' } else { 'NeedsAttention' }
+            Details = if ($deptExists) { "Department OU '$dept' exists." } else { "Department OU '$dept' will be created." }
+        })
+
+        # Check Department Groups
+        $userGroupSam = "$dept-Users"
+        $safeGroupFilter = ConvertTo-ADLdapFilter -Value $userGroupSam
+        $groupObj = Get-ADGroup -Filter "SamAccountName -eq '$safeGroupFilter'" -ErrorAction SilentlyContinue
+        $groupExists = $null -ne $groupObj
+
+        $checks.Add([pscustomobject]@{
+            Name    = "Department Group: $userGroupSam"
+            Status  = if ($groupExists) { 'Passed' } else { 'NeedsAttention' }
+            Details = if ($groupExists) { "Security Group '$userGroupSam' exists." } else { "Security Group '$userGroupSam' will be created." }
         })
     }
 
+    # 4. Check potential user SAM account collisions
+    $collisionCount = 0
+    if ($SampleNames.Count -gt 0) {
+        foreach ($name in $SampleNames) {
+            $parts = $name.Trim() -split '\s+', 2
+            $baseSam = if ($parts.Count -eq 2) { "$($parts[0]).$($parts[1])" } else { $parts[0] }
+            $cleanBase = ($baseSam -replace '[^a-zA-Z0-9.]', '').ToLowerInvariant()
+            if ($cleanBase.Length -gt 20) { $cleanBase = $cleanBase.Substring(0, 20) }
+
+            $safeSamFilter = ConvertTo-ADLdapFilter -Value $cleanBase
+            $existingUser = Get-ADUser -Filter "SamAccountName -eq '$safeSamFilter'" -ErrorAction SilentlyContinue
+            if ($null -ne $existingUser) {
+                $collisionCount++
+                $checks.Add([pscustomobject]@{
+                    Name    = "User Collision Check: $cleanBase"
+                    Status  = 'CollisionWarning'
+                    Details = "User '$cleanBase' already exists in AD. Provisioner will append a unique numerical suffix or skip."
+                })
+            }
+        }
+    }
+
+    $passedCount         = @($checks | Where-Object { $_.Status -eq 'Passed' }).Count
+    $needsAttentionCount = @($checks | Where-Object { $_.Status -eq 'NeedsAttention' }).Count
+
     $summary = [pscustomobject]@{
-        PassedCount         = @($checks | Where-Object { $_.Status -eq 'Passed' }).Count
-        NeedsAttentionCount = @($checks | Where-Object { $_.Status -eq 'NeedsAttention' }).Count
+        PassedCount         = $passedCount
+        NeedsAttentionCount = $needsAttentionCount
+        CollisionCount      = $collisionCount
         Checks              = $checks.ToArray()
     }
 
-    Write-ADAutoXConsole -Message "Preflight completed: $($summary.PassedCount) passed, $($summary.NeedsAttentionCount) pending creation." -Level Info
+    Write-ADAutoXConsole -Message "Preflight completed: $passedCount existing resources verified, $needsAttentionCount pending creation, $collisionCount collision warnings." -Level Info
     return $summary
 }
 

@@ -1,8 +1,8 @@
 @{
     RootModule           = 'ADAutoX.psm1'
     ModuleVersion        = '2.0.0'
-    GUID                 = 'e8f7a9d2-b432-4e56-9a21-789fcd123456'
-    Author               = 'Enterprise Identity Automation Team'
+    GUID                 = '9c4a5e38-7f21-4d1b-8390-e5a6f7b8c9d0'
+    Author               = 'Identity & Directory Engineering Team'
     CompanyName          = 'Enterprise Lab & Identity Operations'
     Copyright            = '(c) 2026. All rights reserved.'
     Description          = 'Enterprise-grade Active Directory identity provisioning, transactional lifecycle management, DPAPI credential security, and audit analytics framework.'
