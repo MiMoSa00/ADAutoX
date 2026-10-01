@@ -224,6 +224,8 @@ try {
                                -Surname $identity.LastName `
                                -SamAccountName $samName `
                                -UserPrincipalName $upn `
+                               -Department $dept `
+                               -Company $CompanyOuName `
                                -Path $deptUsersDN `
                                -AccountPassword $secPassword `
                                -Enabled $true `
