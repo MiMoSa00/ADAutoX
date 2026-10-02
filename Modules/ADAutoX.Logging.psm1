@@ -77,6 +77,7 @@ function Write-ADAutoXLogRecord {
     $computerName = [Environment]::MachineName
     $userName     = [Environment]::UserName
     $actorName    = "$computerName\$userName"
+    $null = $actorName
 
     # PSAvoidAssignmentToAutomaticVariable: use $onWindows (not $isWindows which is a PS6+ readonly automatic variable)
     try {

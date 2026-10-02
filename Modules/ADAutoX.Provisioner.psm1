@@ -321,14 +321,16 @@ function Invoke-ADAutoXPreflight {
         $safeDeptFilter = ConvertTo-ADLdapFilter -Value $dept
 
         # Bug #1 (StrictMode crash): wrap conditional result in @() to guarantee array, never $null
-        $deptOUs = @(if ($staffExists) {
-            try {
-                Get-ADOrganizationalUnit -LDAPFilter "(ou=$safeDeptFilter)" -SearchBase $staffDN -SearchScope OneLevel -ErrorAction Stop
+        $deptOUs = @(
+            if ($staffExists) {
+                try {
+                    Get-ADOrganizationalUnit -LDAPFilter "(ou=$safeDeptFilter)" -SearchBase $staffDN -SearchScope OneLevel -ErrorAction Stop
+                }
+                catch {
+                    Write-Verbose "[ADAutoX.Provisioner] Department OU '$dept' not found in AD (will be created in Phase 2)."
+                }
             }
-            catch {
-                Write-Verbose "[ADAutoX.Provisioner] Department OU '$dept' not found in AD (will be created in Phase 2)."
-            }
-        })
+        )
         $deptExists = $deptOUs.Count -gt 0
 
         $checks.Add([pscustomobject]@{

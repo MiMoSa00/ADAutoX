@@ -13,7 +13,6 @@ $ErrorActionPreference = 'Stop'
 $rootDir = $PSScriptRoot
 Import-Module (Join-Path -Path $rootDir -ChildPath 'ADAutoX.psd1') -Force
 
-[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]
 function Show-ADAutoXMenu {
     Clear-Host
     Write-Host "==========================================================================" -ForegroundColor Cyan
