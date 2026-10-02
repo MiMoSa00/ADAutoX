@@ -1,4 +1,4 @@
-﻿Set-StrictMode -Version Latest
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:SavedDefaultParams = $null
@@ -37,6 +37,7 @@ function Test-ADAutoXDomainReachability {
 
 function Initialize-ADAutoXContext {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidGlobalVars', '')]
     param(
         [string]$Server,
         [PSCredential]$Credential
@@ -104,7 +105,8 @@ function Initialize-ADAutoXContext {
 }
 
 function Clear-ADAutoXContext {
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidGlobalVars', '')]
     param()
 
     if ($script:CreatedPSDrive -and (Get-PSDrive -Name AD -ErrorAction SilentlyContinue)) {

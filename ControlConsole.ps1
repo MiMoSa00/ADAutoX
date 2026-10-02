@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Interactive Control Console and Operator Dashboard for ADAutoX.
 #>
@@ -6,7 +6,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $rootDir = $PSScriptRoot
-Import-Module (Join-Path $rootDir 'ADAutoX.psd1') -Force
+Import-Module (Join-Path -Path $rootDir -ChildPath 'ADAutoX.psd1') -Force
 
 function Show-ADAutoXMenu {
     Clear-Host
@@ -48,7 +48,7 @@ while ($true) {
                 try { $count = [int]$countInput }
                 catch { Write-Host "Invalid number, using default 5." -ForegroundColor Yellow }
             }
-            powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Invoke-ADAutoXProvision.ps1') -AccountCount $count -WhatIf
+            powershell -ExecutionPolicy Bypass -File (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Invoke-ADAutoXProvision.ps1') -AccountCount $count -WhatIf
             Read-Host "`nPress Enter to return to menu..."
         }
         '2' {
@@ -59,7 +59,7 @@ while ($true) {
                 try { $count = [int]$countInput }
                 catch { Write-Host "Invalid number, using default 20." -ForegroundColor Yellow }
             }
-            powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Invoke-ADAutoXProvision.ps1') -AccountCount $count -RollbackOnFailure
+            powershell -ExecutionPolicy Bypass -File (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Invoke-ADAutoXProvision.ps1') -AccountCount $count -RollbackOnFailure
             Read-Host "`nPress Enter to return to menu..."
         }
         '3' {
@@ -71,7 +71,7 @@ while ($true) {
             $showFull       = Read-Host "Show full record details? (y/n, default n)"
             $fullFlag = if ($showFull -eq 'y') { '-Full' } else { '' }
 
-            $auditArgs = @("-File", (Join-Path $rootDir 'Cmdlets\Get-ADAutoXAuditReport.ps1'))
+            $auditArgs = @("-File", (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Get-ADAutoXAuditReport.ps1'))
             if ($filterAction)   { $auditArgs += @('-Action', $filterAction) }
             if ($filterStatus)   { $auditArgs += @('-Status', $filterStatus) }
             if ($filterIdentity) { $auditArgs += @('-Identity', $filterIdentity) }
@@ -102,7 +102,7 @@ while ($true) {
             # Bug #18: all 6 actions listed including Move
             $action   = Read-Host "Enter Action (Enable, Disable, Unlock, ResetPassword, Move, Terminate)"
             if ($identity -and $action) {
-                powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Manage-ADAutoXUser.ps1') -Identity $identity -Action $action
+                powershell -ExecutionPolicy Bypass -File (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Manage-ADAutoXUser.ps1') -Identity $identity -Action $action
             }
             Read-Host "`nPress Enter to return to menu..."
         }
@@ -113,7 +113,7 @@ while ($true) {
             # Bug #16: case-sensitive comparison using -ceq
             $confirm = Read-Host "Type exactly 'DELETE' (uppercase) to confirm"
             if ($confirm -ceq 'DELETE') {
-                powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Reset-ADAutoXEnvironment.ps1') -AllowDestructiveOperation
+                powershell -ExecutionPolicy Bypass -File (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Reset-ADAutoXEnvironment.ps1') -AllowDestructiveOperation
             }
             else {
                 Write-Host "Reset cancelled. (Tip: type DELETE in uppercase to confirm.)" -ForegroundColor Yellow
@@ -122,7 +122,7 @@ while ($true) {
         }
         '7' {
             Write-Host "`n[Running ADAutoX Unit Test Suite]" -ForegroundColor Magenta
-            powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Tests\Run-Tests.ps1')
+            powershell -ExecutionPolicy Bypass -File (Join-Path -Path $rootDir -ChildPath 'Tests\Run-Tests.ps1')
             Read-Host "`nPress Enter to return to menu..."
         }
         '8' {

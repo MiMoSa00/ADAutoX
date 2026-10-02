@@ -1,4 +1,4 @@
-﻿# ADAutoX Module Loader
+# ADAutoX Module Loader
 # DEPENDENCY ORDER IS SIGNIFICANT - do not reorder this list.
 # Load order: Sanitizer and Logging first (no internal deps),
 # then Security (no internal deps), then Context (uses Sanitizer),
@@ -18,7 +18,7 @@ $subModules = @(
 )
 
 foreach ($sub in $subModules) {
-    $subPath = Join-Path $moduleRoot "Modules\$sub"
+    $subPath = Join-Path -Path $moduleRoot -ChildPath "Modules\$sub"
     if (Test-Path -LiteralPath $subPath) {
         Import-Module $subPath -Force
     }

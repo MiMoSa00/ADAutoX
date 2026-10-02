@@ -4,9 +4,9 @@ $ErrorActionPreference = 'Stop'
 $script:Ledger = [System.Collections.Generic.List[psobject]]::new()
 
 function Get-ADAutoXLedgerFilePath {
-    # Unique per-process so concurrent runs don't clobber each other (Bug #3 crash-recovery)
+    # Persistent pending ledger path so subsequent processes/sessions can recover crashed runs (Claude design finding)
     $tempDir = [System.IO.Path]::GetTempPath()
-    return Join-Path $tempDir "ADAutoX-Ledger-$($PID).json"
+    return Join-Path $tempDir 'ADAutoX-Pending-Ledger.json'
 }
 
 function Save-ADAutoXLedgerToDisk {

@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Provisions department OUs, security groups, standard users, and department administrator group assignments in Active Directory.
 
@@ -60,21 +60,21 @@ $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyI
 $rootDir   = Split-Path -Parent $scriptDir
 
 # Load Module
-Import-Module (Join-Path $rootDir 'ADAutoX.psd1') -Force
+Import-Module (Join-Path -Path $rootDir -ChildPath 'ADAutoX.psd1') -Force
 
 if ([string]::IsNullOrWhiteSpace($NamesPath)) {
-    $NamesPath = Join-Path $rootDir 'Data\sample-names.txt'
+    $NamesPath = Join-Path -Path $rootDir -ChildPath 'Data\sample-names.txt'
 }
 if ([string]::IsNullOrWhiteSpace($AuditLogPath)) {
-    $AuditLogPath = Join-Path $rootDir 'ADAutoX-Audit.jsonl'
+    $AuditLogPath = Join-Path -Path $rootDir -ChildPath 'ADAutoX-Audit.jsonl'
 }
 if ([string]::IsNullOrWhiteSpace($ReportPath)) {
-    $ReportPath = Join-Path $rootDir 'ADAutoX-Provisioning-Report.csv'
+    $ReportPath = Join-Path -Path $rootDir -ChildPath 'ADAutoX-Provisioning-Report.csv'
 }
 # Bug #8: default to timestamped per-run filename so previous runs' passwords are never silently overwritten
 if ([string]::IsNullOrWhiteSpace($PasswordFile)) {
     $runStamp  = (Get-Date).ToString('yyyy-MM-dd-HHmmss')
-    $PasswordFile = Join-Path $rootDir "user-passwords-$runStamp.clixml"
+    $PasswordFile = Join-Path -Path $rootDir -ChildPath "user-passwords-$runStamp.clixml"
 }
 
 $correlationId = New-ADAutoXCorrelationId

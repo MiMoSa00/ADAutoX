@@ -1,4 +1,4 @@
-﻿Set-StrictMode -Version Latest
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Get-ADAutoXUnbiasedRandomInt {
@@ -27,6 +27,7 @@ function Get-ADAutoXUnbiasedRandomInt {
 
 function New-ADAutoXRandomPassword {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
     param(
         [ValidateRange(12, 256)]
         [int]$Length = 24

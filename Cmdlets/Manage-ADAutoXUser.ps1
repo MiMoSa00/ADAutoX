@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Performs user lifecycle administration (Enable, Disable, Unlock, ResetPassword, Move, Terminate).
 
@@ -36,10 +36,10 @@ $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyI
 $rootDir   = Split-Path -Parent $scriptDir
 
 # Load Module
-Import-Module (Join-Path $rootDir 'ADAutoX.psd1') -Force
+Import-Module (Join-Path -Path $rootDir -ChildPath 'ADAutoX.psd1') -Force
 
 if ([string]::IsNullOrWhiteSpace($AuditLogPath)) {
-    $AuditLogPath = Join-Path $rootDir 'ADAutoX-Audit.jsonl'
+    $AuditLogPath = Join-Path -Path $rootDir -ChildPath 'ADAutoX-Audit.jsonl'
 }
 
 $correlationId = New-ADAutoXCorrelationId

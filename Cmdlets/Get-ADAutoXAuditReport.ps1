@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Parses and filters ADAutoX JSONL audit logs.
 
@@ -36,10 +36,10 @@ $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyI
 $rootDir   = Split-Path -Parent $scriptDir
 
 # Load Module
-Import-Module (Join-Path $rootDir 'ADAutoX.psd1') -Force
+Import-Module (Join-Path -Path $rootDir -ChildPath 'ADAutoX.psd1') -Force
 
 if ([string]::IsNullOrWhiteSpace($AuditLogPath)) {
-    $AuditLogPath = Join-Path $rootDir 'ADAutoX-Audit.jsonl'
+    $AuditLogPath = Join-Path -Path $rootDir -ChildPath 'ADAutoX-Audit.jsonl'
 }
 
 $results = @(Get-ADAutoXAuditReport -LogPath $AuditLogPath `

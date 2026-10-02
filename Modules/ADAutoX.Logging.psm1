@@ -5,6 +5,7 @@ $script:CurrentCorrelationId = [System.Guid]::NewGuid().ToString()
 
 function New-ADAutoXCorrelationId {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
     param()
     $script:CurrentCorrelationId = [System.Guid]::NewGuid().ToString()
     return $script:CurrentCorrelationId

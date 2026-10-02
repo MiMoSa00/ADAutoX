@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Safely cleans up lab test accounts, department OUs, and security groups created by ADAutoX.
 
@@ -33,10 +33,10 @@ $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyI
 $rootDir   = Split-Path -Parent $scriptDir
 
 # Load Module
-Import-Module (Join-Path $rootDir 'ADAutoX.psd1') -Force
+Import-Module (Join-Path -Path $rootDir -ChildPath 'ADAutoX.psd1') -Force
 
 if ([string]::IsNullOrWhiteSpace($AuditLogPath)) {
-    $AuditLogPath = Join-Path $rootDir 'ADAutoX-Audit.jsonl'
+    $AuditLogPath = Join-Path -Path $rootDir -ChildPath 'ADAutoX-Audit.jsonl'
 }
 
 if (-not $WhatIfPreference -and -not $AllowDestructiveOperation) {
