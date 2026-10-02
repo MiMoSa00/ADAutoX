@@ -243,41 +243,27 @@ function Invoke-ADAutoXPreflight {
     )
 
     Write-ADAutoXConsole -Message 'Phase 1: Preflight Validation (Non-mutating)' -Level Phase
-    # $NetBIOSName is retained for forward-compatibility (callers pass it; will be used for UPN suffix validation in a future release)
+    # $NetBIOSName is retained for forward-compatibility
     $null = $NetBIOSName
     $checks = [System.Collections.Generic.List[psobject]]::new()
 
-    # If RSAT / Active Directory module cmdlets are not present on local machine, simulate preflight
     if (-not (Get-Command -Name Get-ADOrganizationalUnit -ErrorAction SilentlyContinue)) {
         Write-ADAutoXConsole -Message "[Offline/Preview] Active Directory module not present locally. Simulating preflight checks." -Level Warning
-        $checks.Add([pscustomobject]@{
-            Name    = 'Company OU'
-            Status  = 'NeedsAttention'
-            Details = "Company OU '$CompanyOuName' will be evaluated during Phase 2."
-        })
-        $checks.Add([pscustomobject]@{
-            Name    = 'Staff OU'
-            Status  = 'NeedsAttention'
-            Details = "Staff OU '$StaffOuName' will be evaluated during Phase 2."
-        })
+        $obj1 = [pscustomobject]@{ Name = 'Company OU'; Status = 'NeedsAttention'; Details = "Company OU '$CompanyOuName' will be evaluated during Phase 2." }
+        $checks.Add($obj1)
+        
+        $obj2 = [pscustomobject]@{ Name = 'Staff OU'; Status = 'NeedsAttention'; Details = "Staff OU '$StaffOuName' will be evaluated during Phase 2." }
+        $checks.Add($obj2)
+
         foreach ($dept in $Departments) {
-            $checks.Add([pscustomobject]@{
-                Name    = "Department Structure: $dept"
-                Status  = 'NeedsAttention'
-                Details = "Department OU '$dept' will be evaluated during Phase 2."
-            })
+            $objDept = [pscustomobject]@{ Name = "Department Structure: $dept"; Status = 'NeedsAttention'; Details = "Department OU '$dept' will be evaluated during Phase 2." }
+            $checks.Add($objDept)
         }
-        $summary = [pscustomobject]@{
-            PassedCount         = 0
-            NeedsAttentionCount = $checks.Count
-            CollisionCount      = 0
-            Checks              = $checks.ToArray()
-        }
+        $summary = [pscustomobject]@{ PassedCount = 0; NeedsAttentionCount = $checks.Count; CollisionCount = 0; Checks = $checks.ToArray() }
         Write-ADAutoXConsole -Message "Preflight completed: $($summary.NeedsAttentionCount) pending creation/validation." -Level Info
         return $summary
     }
 
-    # 1. Check Root Company OU (Bug #Minor: use Stop not SilentlyContinue to surface real errors)
     $safeCompanyFilter = ConvertTo-ADLdapFilter -Value $CompanyOuName
     try {
         $companyOUs = @(Get-ADOrganizationalUnit -LDAPFilter "(ou=$safeCompanyFilter)" -SearchBase $DomainDN -SearchScope OneLevel -ErrorAction Stop)
@@ -287,13 +273,15 @@ function Invoke-ADAutoXPreflight {
     }
     $companyExists = $companyOUs.Count -gt 0
 
-    $checks.Add([pscustomobject]@{
-        Name    = 'Company OU'
-        Status  = if ($companyExists) { 'Passed' } else { 'NeedsAttention' }
-        Details = if ($companyExists) { "Root OU '$CompanyOuName' already exists in AD (will not be created/ledgered)." } else { "Root OU '$CompanyOuName' does not exist; will be created." }
-    })
+    $statusCompany = 'NeedsAttention'
+    $detailsCompany = "Root OU '$CompanyOuName' does not exist; will be created."
+    if ($companyExists) {
+        $statusCompany = 'Passed'
+        $detailsCompany = "Root OU '$CompanyOuName' already exists in AD (will not be created/ledgered)."
+    }
+    $objCompany = [pscustomobject]@{ Name = 'Company OU'; Status = $statusCompany; Details = $detailsCompany }
+    $checks.Add($objCompany)
 
-    # 2. Check Staff OU
     $staffExists = $false
     $safeCompanyValue = ConvertTo-ADDistinguishedNameValue -Value $CompanyOuName
     $safeStaffValue   = ConvertTo-ADDistinguishedNameValue -Value $StaffOuName
@@ -310,17 +298,18 @@ function Invoke-ADAutoXPreflight {
             throw "Preflight: Failed to query Staff OU. Error: $($_.Exception.Message)"
         }
     }
-    $checks.Add([pscustomobject]@{
-        Name    = 'Staff OU'
-        Status  = if ($staffExists) { 'Passed' } else { 'NeedsAttention' }
-        Details = if ($staffExists) { "Staff OU '$StaffOuName' already exists in AD." } else { "Staff OU '$StaffOuName' will be created." }
-    })
 
-    # 3. Check Department OUs & Groups
+    $statusStaff = 'NeedsAttention'
+    $detailsStaff = "Staff OU '$StaffOuName' will be created."
+    if ($staffExists) {
+        $statusStaff = 'Passed'
+        $detailsStaff = "Staff OU '$StaffOuName' already exists in AD."
+    }
+    $objStaff = [pscustomobject]@{ Name = 'Staff OU'; Status = $statusStaff; Details = $detailsStaff }
+    $checks.Add($objStaff)
+
     foreach ($dept in $Departments) {
         $safeDeptFilter = ConvertTo-ADLdapFilter -Value $dept
-
-        # Bug #1 (StrictMode crash): wrap conditional result in @() to guarantee array, never $null
         $deptOUs = @()
         if ($staffExists) {
             try {
@@ -333,13 +322,15 @@ function Invoke-ADAutoXPreflight {
         }
         $deptExists = $deptOUs.Count -gt 0
 
-        $checks.Add([pscustomobject]@{
-            Name    = "Department OU: $dept"
-            Status  = if ($deptExists) { 'Passed' } else { 'NeedsAttention' }
-            Details = if ($deptExists) { "Department OU '$dept' exists." } else { "Department OU '$dept' will be created." }
-        })
+        $statusDept = 'NeedsAttention'
+        $detailsDept = "Department OU '$dept' will be created."
+        if ($deptExists) {
+            $statusDept = 'Passed'
+            $detailsDept = "Department OU '$dept' exists."
+        }
+        $objDept = [pscustomobject]@{ Name = "Department OU: $dept"; Status = $statusDept; Details = $detailsDept }
+        $checks.Add($objDept)
 
-        # Bug #Minor: Group lookups must use a PowerShell -Filter, not LDAP escaped values
         $deptUserGroupSam = "$dept-Users"
         try {
             $groupObj = Get-ADGroup -Filter "SamAccountName -eq '$deptUserGroupSam'" -ErrorAction Stop
@@ -349,20 +340,25 @@ function Invoke-ADAutoXPreflight {
         }
         $groupExists = $null -ne $groupObj
 
-        $checks.Add([pscustomobject]@{
-            Name    = "Department Group: $deptUserGroupSam"
-            Status  = if ($groupExists) { 'Passed' } else { 'NeedsAttention' }
-            Details = if ($groupExists) { "Security Group '$deptUserGroupSam' exists." } else { "Security Group '$deptUserGroupSam' will be created." }
-        })
+        $statusGroup = 'NeedsAttention'
+        $detailsGroup = "Security Group '$deptUserGroupSam' will be created."
+        if ($groupExists) {
+            $statusGroup = 'Passed'
+            $detailsGroup = "Security Group '$deptUserGroupSam' exists."
+        }
+        $objGroup = [pscustomobject]@{ Name = "Department Group: $deptUserGroupSam"; Status = $statusGroup; Details = $detailsGroup }
+        $checks.Add($objGroup)
     }
 
-    # 4. Check potential user SAM account collisions (all names, not just first 20 - Bug #Minor)
     $collisionCount = 0
     foreach ($name in $SampleNames) {
         $parts = $name.Trim() -split '\s+', 2
-        $baseSam = if ($parts.Count -eq 2) { "$($parts[0]).$($parts[1])" } else { $parts[0] }
+        
+        $baseSam = $parts[0]
+        if ($parts.Count -eq 2) {
+            $baseSam = "$($parts[0]).$($parts[1])"
+        }
 
-        # Bug #Minor: collision check uses same sanitizer as real provisioner for consistency
         try {
             $sanitizedSam = Get-ADSanitizedSamAccountName -BaseName $baseSam
         }
@@ -379,11 +375,12 @@ function Invoke-ADAutoXPreflight {
 
         if ($null -ne $existingUser) {
             $collisionCount++
-            $checks.Add([pscustomobject]@{
-                Name    = "User Collision Check: $sanitizedSam"
-                Status  = 'CollisionWarning'
+            $objCollision = [pscustomobject]@{ 
+                Name = "User Collision Check: $sanitizedSam"
+                Status = 'CollisionWarning'
                 Details = "User '$sanitizedSam' already exists in AD. Provisioner will skip creation and not add to ledger."
-            })
+            }
+            $checks.Add($objCollision)
         }
     }
 
