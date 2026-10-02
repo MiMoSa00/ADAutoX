@@ -6,7 +6,7 @@ $script:Ledger = [System.Collections.Generic.List[psobject]]::new()
 function Get-ADAutoXLedgerFilePath {
     # Persistent pending ledger path so subsequent processes/sessions can recover crashed runs (Claude design finding)
     $tempDir = [System.IO.Path]::GetTempPath()
-    return Join-Path $tempDir 'ADAutoX-Pending-Ledger.json'
+    return Join-Path -Path $tempDir -ChildPath 'ADAutoX-Pending-Ledger.json'
 }
 
 function Save-ADAutoXLedgerToDisk {
@@ -63,6 +63,10 @@ function Initialize-ADAutoXLedger {
 
     $ledgerPath = Get-ADAutoXLedgerFilePath
 
+    if ($null -eq $script:Ledger) {
+        $script:Ledger = [System.Collections.Generic.List[psobject]]::new()
+    }
+
     if ($RecoverFromCrash -and (Test-Path -LiteralPath $ledgerPath -PathType Leaf)) {
         Load-ADAutoXLedgerFromDisk
     }
@@ -77,6 +81,9 @@ function Initialize-ADAutoXLedger {
 function Get-ADAutoXLedger {
     [CmdletBinding()]
     param()
+    if ($null -eq $script:Ledger) {
+        return @()
+    }
     return $script:Ledger.ToArray()
 }
 
@@ -94,6 +101,10 @@ function Add-ADAutoXLedgerEntry {
 
         [bool]$CreatedByThisRun = $true
     )
+
+    if ($null -eq $script:Ledger) {
+        $script:Ledger = [System.Collections.Generic.List[psobject]]::new()
+    }
 
     $script:Ledger.Add([pscustomobject]@{
         ObjectType        = $ObjectType
@@ -113,7 +124,7 @@ function Invoke-ADAutoXLedgerRollback {
     )
 
     # If in-memory ledger is empty, attempt to recover from crash-recovery file
-    if ($script:Ledger.Count -eq 0) {
+    if ($null -eq $script:Ledger -or $script:Ledger.Count -eq 0) {
         Load-ADAutoXLedgerFromDisk
     }
 
@@ -235,7 +246,7 @@ function Invoke-ADAutoXPreflight {
     $checks = [System.Collections.Generic.List[psobject]]::new()
 
     # If RSAT / Active Directory module cmdlets are not present on local machine, simulate preflight
-    if (-not (Get-Command Get-ADOrganizationalUnit -ErrorAction SilentlyContinue)) {
+    if (-not (Get-Command -Name Get-ADOrganizationalUnit -ErrorAction SilentlyContinue)) {
         Write-ADAutoXConsole -Message "[Offline/Preview] Active Directory module not present locally. Simulating preflight checks." -Level Warning
         $checks.Add([pscustomobject]@{
             Name    = 'Company OU'
@@ -325,7 +336,7 @@ function Invoke-ADAutoXPreflight {
         # Bug #Minor: Group lookups must use a PowerShell -Filter, not LDAP escaped values
         $deptUserGroupSam = "$dept-Users"
         try {
-            $groupObj = Get-ADGroup -Filter { SamAccountName -eq $deptUserGroupSam } -ErrorAction Stop
+            $groupObj = Get-ADGroup -Filter "SamAccountName -eq '$deptUserGroupSam'" -ErrorAction Stop
         }
         catch {
             $groupObj = $null
@@ -354,7 +365,7 @@ function Invoke-ADAutoXPreflight {
         }
 
         try {
-            $existingUser = Get-ADUser -Filter { SamAccountName -eq $sanitizedSam } -ErrorAction Stop
+            $existingUser = Get-ADUser -Filter "SamAccountName -eq '$sanitizedSam'" -ErrorAction Stop
         }
         catch {
             $existingUser = $null

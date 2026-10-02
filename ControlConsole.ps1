@@ -69,7 +69,6 @@ while ($true) {
             $filterStatus   = Read-Host "Filter by Status (e.g. Succeeded, Failed, Skipped) - leave blank for all"
             $filterIdentity = Read-Host "Filter by Identity (partial DN or name match) - leave blank for all"
             $showFull       = Read-Host "Show full record details? (y/n, default n)"
-            $fullFlag = if ($showFull -eq 'y') { '-Full' } else { '' }
 
             $auditArgs = @("-File", (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Get-ADAutoXAuditReport.ps1'))
             if ($filterAction)   { $auditArgs += @('-Action', $filterAction) }

@@ -19,6 +19,7 @@ function Get-ADAutoXCorrelationId {
 
 function Write-ADAutoXConsole {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]
     param(
         [Parameter(Mandatory = $true)]
         [string]$Message,
@@ -66,7 +67,7 @@ function Write-ADAutoXLogRecord {
 
     if ([string]::IsNullOrWhiteSpace($LogPath)) { return }
 
-    $parentDir = Split-Path -Parent ([System.IO.Path]::GetFullPath($LogPath))
+    $parentDir = Split-Path -Path ([System.IO.Path]::GetFullPath($LogPath)) -Parent
     if ($parentDir -and -not (Test-Path -LiteralPath $parentDir)) {
         New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
     }
