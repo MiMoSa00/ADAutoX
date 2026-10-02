@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Updates Department and Company attributes on existing ADAutoX user accounts.
 #>

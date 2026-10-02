@@ -1,4 +1,4 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:CurrentCorrelationId = [System.Guid]::NewGuid().ToString()
@@ -68,13 +68,34 @@ function Write-ADAutoXLogRecord {
         New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
     }
 
-    $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    # Cross-platform identity resolution (Bug #25 / Claude finding):
+    # [WindowsIdentity]::GetCurrent() throws on Linux/macOS. Fall back to env variables.
+    $actorName = ''
+    try {
+        $isWindows = $false
+        if ($PSVersionTable.PSVersion.Major -ge 6) {
+            $isWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+                [System.Runtime.InteropServices.OSPlatform]::Windows)
+        } else {
+            $isWindows = $env:OS -like '*Windows*'
+        }
+
+        if ($isWindows) {
+            $actorName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        } else {
+            $actorName = "$($env:COMPUTERNAME)\$($env:USER)"
+        }
+    }
+    catch {
+        $actorName = [Environment]::UserName
+    }
+
     $effectiveCorrelationId = if (-not [string]::IsNullOrWhiteSpace($CorrelationId)) { $CorrelationId } else { $script:CurrentCorrelationId }
 
     $record = [ordered]@{
         Timestamp     = (Get-Date).ToUniversalTime().ToString('o')
-        Actor         = $currentIdentity.Name
-        Operator      = $currentIdentity.Name
+        Actor         = $actorName
+        Operator      = $actorName
         Computer      = $env:COMPUTERNAME
         Action        = $Action
         Target        = $Target
@@ -87,11 +108,14 @@ function Write-ADAutoXLogRecord {
     }
 
     $jsonLine = $record | ConvertTo-Json -Compress
+
+    # Bug #25: A logging failure must NOT abort an operation that already succeeded.
+    # Wrap Add-Content and downgrade failures to warnings.
     try {
         $jsonLine | Add-Content -LiteralPath $LogPath -Encoding UTF8
     }
     catch {
-        Write-ADAutoXConsole -Message "Failed to write audit log entry to '$LogPath': $($_.Exception.Message)" -Level Warning
+        Write-ADAutoXConsole -Message "WARNING: Failed to write audit log entry to '$LogPath': $($_.Exception.Message)" -Level Warning
     }
 }
 

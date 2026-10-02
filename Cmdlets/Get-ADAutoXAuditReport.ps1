@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Parses and filters ADAutoX JSONL audit logs.
 
@@ -7,6 +7,9 @@
 
 .EXAMPLE
     .\Get-ADAutoXAuditReport.ps1 -Action CreateUser -OutputPath '.\Filtered-User-Audit.csv'
+
+.EXAMPLE
+    .\Get-ADAutoXAuditReport.ps1 -Full
 #>
 [CmdletBinding()]
 param(
@@ -20,7 +23,10 @@ param(
 
     [string]$Actor = '',
 
-    [string]$OutputPath = ''
+    [string]$OutputPath = '',
+
+    # Bug #26: show all fields including Message/Details
+    [switch]$Full
 )
 
 Set-StrictMode -Version Latest
@@ -45,7 +51,13 @@ $results = @(Get-ADAutoXAuditReport -LogPath $AuditLogPath `
 
 if ($results.Count -gt 0) {
     Write-ADAutoXConsole -Message "Displaying $($results.Count) matching audit entries:" -Level Phase
-    $results | Format-Table -Property Timestamp, Action, Target, Status, Actor, CorrelationId -AutoSize
+    if ($Full) {
+        # Bug #26: show all fields including Message and Details
+        $results | Format-List *
+    }
+    else {
+        $results | Format-Table -Property Timestamp, Action, Target, Status, Actor, Message, CorrelationId -AutoSize
+    }
 }
 else {
     Write-ADAutoXConsole -Message "No matching audit log entries found." -Level Warning

@@ -2,7 +2,7 @@
 
 **ADAutoX** is an enterprise-grade, modular PowerShell framework for Active Directory identity provisioning, transactional lifecycle management, DPAPI credential protection, structured JSONL audit analytics, and security posture scanning.
 
-Designed as an architectural evolution over monolithic AD automation scripts, ADAutoX demonstrates modern PowerShell best practices: clean module separation (`.psd1` + `.psm1`), 4-phase execution pipelines, persistent transactional rollback ledgers, unbiased cryptographic security, and standalone unit test suites.
+Designed as an architectural evolution over monolithic AD automation scripts, ADAutoX demonstrates modern PowerShell best practices: clean module separation (`.psd1` + `.psm1`), 4-phase execution pipelines, persistent transactional rollback ledgers, unbiased cryptographic security, and standalone unit test suites that run without a live AD domain controller.
 
 ---
 
@@ -11,14 +11,14 @@ Designed as an architectural evolution over monolithic AD automation scripts, AD
 | Metric / Capability | Legacy (`AD_PS-automation`) | Modern (`ADAutoX Framework`) |
 | :--- | :--- | :--- |
 | **Architecture** | Monolithic script mixing logic & UI | Modular sub-modules (`Context`, `Sanitizer`, `Security`, `Provisioner`, `Reporting`) |
-| **Module Manifest** | None (`.psm1` only, no versioning or export controls) | Official Module Manifest (`ADAutoX.psd1` with versioning, exported functions, metadata) |
+| **Module Manifest** | None (`.psm1` only, no versioning or export controls) | Official Module Manifest (`ADAutoX.psd1` v2.1.0, exported functions, private variables locked) |
 | **Naming Conventions** | Mixed/humorous names | Standard PowerShell Verb-Noun Cmdlets (`Invoke-ADAutoXProvision`, `Reset-ADAutoXEnvironment`) |
-| **Rollback & Transaction** | Basic cleanup loop on failure | Persistent & In-memory Transactional Ledger (`Initialize-ADAutoXLedger`, `Invoke-ADAutoXLedgerRollback` with LocalAppData persistence). A new run refuses to start if a previous ledger is still pending unless you explicitly discard it. Only objects created during the current run are eligible for rollback. |
-| **Group Provisioning** | Manual or missing | Automated creation of Department Security Groups (`<Dept>-Users`), plus `<Dept>-Admins` when the switch is enabled and the first provisioned user is assigned to it. |
-| **Cryptographic Security** | Predictable RNG or modulo bias | Unbiased Rejection Sampling RNG (`Get-ADAutoXUnbiasedRandomInt`) and independent Fisher-Yates shuffle. |
-| **Unit Testing** | Syntax parser check | Standalone Automated Unit Test Harness (`Run-Tests.ps1`) testing sanitization, diacritics, crypto & cross-platform ACL safety. |
-| **Operator Experience** | Invoking loose standalone `.ps1` files | Interactive Control Console (`ControlConsole.ps1`) with menu-driven execution |
-| **Security & ACLs** | Basic exports | Dynamic ACL locking on export & sensitive CSV files to executing Windows SID (cross-platform safe). |
+| **Rollback & Transaction** | Basic cleanup loop on failure | Per-process disk-backed ledger (`Invoke-ADAutoXLedgerRollback`). **Only ledgers objects actually created this run.** Pre-existing AD objects survive rollback intact. OUs deleted deepest-first to prevent spurious "already deleted" errors. |
+| **Group Provisioning** | None | Automated creation of Department Security Groups (`<Dept>-Users`), Delegated Admin Groups (`<Dept>-Admins`), and automatic group membership assignment. |
+| **Cryptographic Security** | Predictable RNG or modulo bias | Unbiased Rejection Sampling (`Get-ADAutoXUnbiasedRandomInt`) + independent Fisher-Yates shuffle. |
+| **Unit Testing** | Syntax parser check | Standalone Automated Unit Test Harness (`Run-Tests.ps1`) — no live AD required. |
+| **Operator Experience** | Invoking loose standalone `.ps1` files | Interactive Control Console (`ControlConsole.ps1`) exposing all filter options for audit logs and security scans. |
+| **Security & ACLs** | Basic exports | Per-run timestamped DPAPI credential exports (no silent overwrite). Dynamic ACL enforcement (cross-platform safe). |
 
 ---
 
@@ -26,23 +26,23 @@ Designed as an architectural evolution over monolithic AD automation scripts, AD
 
 ```text
 ADAutoX/
-├── ADAutoX.psd1                    # Module Manifest (Version 2.0.0, GUID, Function Exports)
-├── ADAutoX.psm1                    # Root Module Loader
+├── ADAutoX.psd1                    # Module Manifest (Version 2.1.0, VariablesToExport = @())
+├── ADAutoX.psm1                    # Root Module Loader (load-order documented, missing files throw immediately)
 ├── ControlConsole.ps1              # Interactive CLI Menu & Operator Dashboard
 │
-├── Modules/                        # Sub-Modules (Core Engine)
-│   ├── ADAutoX.Context.psm1        # Domain Controller discovery & PSDefaultParameterValues manager
-│   ├── ADAutoX.Sanitizer.psm1      # LDAP filter escaping, DN escaping, FormD unicode diacritic stripper
-│   ├── ADAutoX.Security.psm1       # Unbiased cryptographic RNG password generator, DPAPI Clixml exporter
-│   ├── ADAutoX.Provisioner.psm1    # OU hierarchy builder, security groups, persistent rollback ledger
-│   ├── ADAutoX.Logging.psm1        # Structured JSONL logger & correlation ID generator
-│   └── ADAutoX.Reporting.psm1      # JSONL log parser, CSV exporter & security posture scanner
+├── Modules/                        # Sub-Modules (Core Engine) — load order is significant
+│   ├── ADAutoX.Sanitizer.psm1      # Level 0: LDAP filter & DN escaping, FormD diacritic stripping
+│   ├── ADAutoX.Logging.psm1        # Level 0: Structured JSONL logger, cross-platform identity, fault-tolerant
+│   ├── ADAutoX.Security.psm1       # Level 0: Unbiased crypto RNG passwords, DPAPI Clixml exporter
+│   ├── ADAutoX.Context.psm1        # Level 1: DC discovery, PSDefaultParameterValues, AD: drive lifecycle
+│   ├── ADAutoX.Provisioner.psm1    # Level 2: OU/group builder, per-PID crash-safe rollback ledger
+│   └── ADAutoX.Reporting.psm1      # Level 2: JSONL log parser & security posture scanner
 │
 ├── Cmdlets/                        # Standard Verb-Noun CLI Tools
-│   ├── Invoke-ADAutoXProvision.ps1 # 4-Phase Provisioning Controller (Preflight, Provision, Verify, Report)
-│   ├── Reset-ADAutoXEnvironment.ps1# Controlled Lab Teardown Tool (-AllowDestructiveOperation)
-│   ├── Get-ADAutoXAuditReport.ps1  # Audit Log Filtering & Analytics CLI
-│   └── Manage-ADAutoXUser.ps1      # Lifecycle Management (Enable, Disable, Unlock, ResetPassword, Terminate)
+│   ├── Invoke-ADAutoXProvision.ps1 # 4-Phase Provisioning (Preflight→Provision→Verify→Report)
+│   ├── Reset-ADAutoXEnvironment.ps1# Controlled Lab Teardown (real WhatIf preview, sanitized DN, clear error handling)
+│   ├── Get-ADAutoXAuditReport.ps1  # Audit Log Viewer (-Full flag shows all fields incl. Message/Details)
+│   └── Manage-ADAutoXUser.ps1      # Lifecycle Management (all 6 actions; WhatIf validates user first)
 │
 ├── Data/                           # Data Sources
 │   └── sample-names.txt            # Sample identity templates (35+ names)
@@ -55,61 +55,70 @@ ADAutoX/
 
 ---
 
-## Key Technical Features & Enhancements
+## Key Technical Features & Designs
 
-### 1. Strict Ledger Scoping & Safe Rollback
-- Objects that already exist in Active Directory (OUs, Groups, Users) are detected and skipped.
-- Only objects **actually created during the current execution** are added to the transaction ledger (`Add-ADAutoXLedgerEntry`).
-- Rollback only removes created objects, protecting pre-existing production OUs and users from accidental deletion.
-- The ledger persists under LocalAppData and blocks a new run until an unresolved prior ledger is either rolled back or explicitly discarded.
+### 1. Strict Idempotent Ledger & Safe Rollback
+- **Only objects created during this specific run** are added to the ledger. Pre-existing OUs, groups, and users are detected, skipped, and never ledgered.
+- Rollback deletes OUs **deepest-first** (sorted by DN depth) so children are never deleted twice.
+- The ledger is persisted to a **per-process temp file** (`ADAutoX-Ledger-<PID>.json`) — two concurrent runs never clobber each other, and a hard process kill preserves the state for recovery.
 
 ### 2. Full Security Group Provisioning
-- Automatically creates Department Security Groups (`<Dept>-Users`) and places provisioned users inside.
-- Creates Delegated Admin Groups (`<Dept>-Admins`) when `-CreateDepartmentAdministrators` is set, and the first provisioned user in that department is assigned to it.
+- Creates Department Security Groups (`<Dept>-Users`) under a dedicated `Groups` sub-OU per department.
+- Creates Delegated Admin Groups (`<Dept>-Admins`) when `-CreateDepartmentAdministrators` is enabled.
+- Automatically adds provisioned users to their department group; assigns the first user per department to the admin group.
 
-### 3. Real Multi-Phase Pipeline
-- **Phase 1 (Preflight)**: Actively queries Active Directory to check for existing OUs, security groups, and potential SAM account collisions before mutating state.
-- **Phase 2 (Provisioning)**: Creates OUs, Groups, and Users with full LDAP/DN sanitization (`ConvertTo-ADLdapFilter`, `ConvertTo-ADDistinguishedNameValue`).
-- **Phase 3 (Verification)**: Actively queries the target Domain Controller (`Get-ADUser`, `Get-ADGroup`, `Get-ADOrganizationalUnit`) to confirm object existence and properties.
-- **Phase 4 (Reporting)**: Generates audit logs (`ADAutoX-Audit.jsonl`), CSV reports, and DPAPI-encrypted credential backups (`user-passwords.clixml`).
+### 3. Real 4-Phase Pipeline
+- **Phase 1 (Preflight)**: Queries AD for existing OUs, security groups, and SAM account collisions **for all target accounts** (not just first 20). Uses proper PowerShell `-Filter` variables (not LDAP-escaped values) for group lookups. Surfaces real connectivity errors instead of silently treating them as "nothing found."
+- **Phase 2 (Provisioning)**: Creates OUs, Groups, and Users. Duplicate accounts are logged as `Skipped` and excluded from the ledger and password export.
+- **Phase 3 (Verification)**: Queries the target DC to confirm every ledgered object exists. **Throws and triggers rollback** if any verification fails.
+- **Phase 4 (Reporting)**: Isolated in its own try/catch — a locked CSV or full disk does **not** trigger rollback of successfully provisioned accounts.
 
-### 4. Cryptographically Unbiased Security
-- Uses rejection sampling (`Get-ADAutoXUnbiasedRandomInt`) to eliminate modulo bias.
-- Uses independent calls to `RandomNumberGenerator` for Fisher-Yates shuffling to ensure cryptographically strong, uniform password generation.
-- Cross-platform safe ACL enforcement (`Protect-ADAutoXFileAcl`).
+### 4. Cross-Platform Safety
+- `Write-ADAutoXLogRecord` uses `[WindowsIdentity]::GetCurrent()` on Windows and falls back to `$env:USER`/`$env:COMPUTERNAME` on Linux/macOS.
+- `Protect-ADAutoXFileAcl` OS-checks before applying NTFS ACLs.
+- `Logging.psm1` uses a try/catch on `Add-Content` — a disk-full or locked-file error issues a warning instead of aborting an already-completed AD operation.
+
+### 5. Timestamped Credential Exports
+- Each run writes to a unique `user-passwords-<YYYY-MM-DD-HHmmss>.clixml` file by default, so no run silently overwrites another run's passwords.
 
 ---
 
 ## Quick Start Guide
 
-### 1. Run Automated Unit Tests
-Validate framework logic locally:
+### 1. Run Automated Unit Tests (no AD required)
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\Tests\Run-Tests.ps1
 ```
 
 ### 2. Launch the Interactive Control Console
-For a guided menu experience:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\ControlConsole.ps1
 ```
 
-### 3. Preview Provisioning via CLI (`-WhatIf`)
+### 3. Preview Provisioning (`-WhatIf`, no AD writes)
 ```powershell
-.\Cmdlets\Invoke-ADAutoXProvision.ps1 -AccountCount 20 -WhatIf
+.\Cmdlets\Invoke-ADAutoXProvision.ps1 -AccountCount 10 -WhatIf
 ```
 
-### 4. Execute Live Provisioning (Rollback Enabled by Default)
+### 4. Live Provisioning (rollback on failure enabled by default)
 ```powershell
-.\Cmdlets\Invoke-ADAutoXProvision.ps1 -AccountCount 20 -RollbackOnFailure
+.\Cmdlets\Invoke-ADAutoXProvision.ps1 -AccountCount 20
 ```
 
 ### 5. Filter Audit Logs
 ```powershell
+# Summary view
 .\Cmdlets\Get-ADAutoXAuditReport.ps1 -Action CreateUser -Status Succeeded
+# Full detail view with Message and Details fields
+.\Cmdlets\Get-ADAutoXAuditReport.ps1 -Status Failed -Full
 ```
 
-### 6. Reset Lab Environment
+### 6. Preview Teardown (shows real object counts)
 ```powershell
-.\Cmdlets\Reset-ADAutoXEnvironment.ps1 -AllowDestructiveOperation
+.\Cmdlets\Reset-ADAutoXEnvironment.ps1 -CompanyOuName 'Company' -WhatIf
+```
+
+### 7. Perform Teardown
+```powershell
+.\Cmdlets\Reset-ADAutoXEnvironment.ps1 -CompanyOuName 'Company' -AllowDestructiveOperation
 ```

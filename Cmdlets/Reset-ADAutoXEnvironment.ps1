@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Safely cleans up lab test accounts, department OUs, and security groups created by ADAutoX.
 
@@ -48,27 +48,50 @@ Write-ADAutoXConsole -Message "Initiating ADAutoX Environment Reset [Correlation
 
 try {
     $adInfo = Initialize-ADAutoXContext -Server $Server -Credential $Credential
+
+    # Bug #3 / #29: always sanitize the OU name before using it in a DN path
     $safeCompanyOuValue = ConvertTo-ADDistinguishedNameValue -Value $CompanyOuName
     $targetDN = "OU=$safeCompanyOuValue,$($adInfo.DomainDN)"
 
     if ($WhatIfPreference) {
-        Write-ADAutoXConsole -Message "[WhatIf Mode] Previewing environment teardown for OU '$CompanyOuName'." -Level Warning
-        $existingOu = Get-ADOrganizationalUnit -Identity $targetDN -ErrorAction SilentlyContinue
-        if ($null -eq $existingOu) {
-            Write-ADAutoXConsole -Message "Target OU '$targetDN' does not exist. Nothing to clean up." -Level Warning
+        Write-ADAutoXConsole -Message "[WhatIf Mode] Checking target OU '$CompanyOuName' in domain '$($adInfo.DomainName)'..." -Level Warning
+
+        # Bug #14: In WhatIf, actually connect and query what is inside the OU
+        $existingOu = $null
+        try {
+            $existingOu = Get-ADOrganizationalUnit -Identity $targetDN -ErrorAction Stop
+        }
+        catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
+            Write-ADAutoXConsole -Message "[WhatIf] Target OU '$targetDN' does not exist. Nothing to delete." -Level Warning
             return
         }
+        catch {
+            # Bug #29: don't swallow real connectivity errors as "nothing to clean up"
+            throw "WhatIf preflight failed: Could not check target OU. Verify connectivity and permissions. Error: $($_.Exception.Message)"
+        }
 
-        $counts = @(Get-ADObject -Filter * -SearchBase $targetDN)
-        $userCount = @($counts | Where-Object { $_.ObjectClass -eq 'user' }).Count
-        $groupCount = @($counts | Where-Object { $_.ObjectClass -eq 'group' }).Count
-        $subOuCount = @($counts | Where-Object { $_.ObjectClass -eq 'organizationalUnit' }).Count
+        $allObjects  = @(Get-ADObject -Filter * -SearchBase $targetDN -ErrorAction SilentlyContinue)
+        $userCount   = @($allObjects | Where-Object { $_.ObjectClass -eq 'user' }).Count
+        $groupCount  = @($allObjects | Where-Object { $_.ObjectClass -eq 'group' }).Count
+        $subOuCount  = @($allObjects | Where-Object { $_.ObjectClass -eq 'organizationalUnit' }).Count
 
-        Write-ADAutoXConsole -Message "[WhatIf Mode] OU '$CompanyOuName' contains $userCount users, $groupCount groups, and $subOuCount child OUs. No deletion will occur in preview mode." -Level Warning
+        Write-ADAutoXConsole -Message "[WhatIf] OU '$CompanyOuName' contains: $userCount user(s), $groupCount group(s), $subOuCount child OU(s). Live run would recursively delete all of them." -Level Warning
         return
     }
 
-    $ouExists = Test-Path "AD:\$targetDN" -ErrorAction SilentlyContinue
+    # Bug #29: distinguish "doesn't exist" from genuine errors rather than swallowing both
+    $ouExists = $false
+    try {
+        $null = Get-ADOrganizationalUnit -Identity $targetDN -ErrorAction Stop
+        $ouExists = $true
+    }
+    catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
+        $ouExists = $false
+    }
+    catch {
+        throw "Failed to verify target OU existence. Check connectivity and permissions. Error: $($_.Exception.Message)"
+    }
+
     if (-not $ouExists) {
         Write-ADAutoXConsole -Message "Target OU '$targetDN' does not exist. Nothing to clean up." -Level Warning
         return

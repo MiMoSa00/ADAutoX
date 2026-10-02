@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Performs user lifecycle administration (Enable, Disable, Unlock, ResetPassword, Move, Terminate).
 
@@ -14,14 +14,13 @@ param(
     [string]$Identity,
 
     [Parameter(Mandatory = $true)]
+    # Bug #18: all 6 actions listed including Move
     [ValidateSet('Enable', 'Disable', 'Unlock', 'ResetPassword', 'Move', 'Terminate')]
     [string]$Action,
 
     [string]$TargetOU = '',
 
     [string]$Reason = '',
-
-    [string]$PasswordFile = '',
 
     [string]$AuditLogPath = '',
 
@@ -47,11 +46,12 @@ $correlationId = New-ADAutoXCorrelationId
 Write-ADAutoXConsole -Message "Lifecycle Action '$Action' requested for '$Identity' [CorrelationID: $correlationId]" -Level Info
 
 try {
+    # Bug #15: always connect and look up the user, even in -WhatIf mode, to validate the identity
     $adInfo = Initialize-ADAutoXContext -Server $Server -Credential $Credential
-    $user = Get-ADUser -Identity $Identity -Properties Description -ErrorAction Stop
+    $user   = Get-ADUser -Identity $Identity -Properties Description -ErrorAction Stop
 
     if ($WhatIfPreference) {
-        Write-ADAutoXConsole -Message "[WhatIf Mode] Previewing action '$Action' on existing user '$Identity' ($($user.DistinguishedName))." -Level Warning
+        Write-ADAutoXConsole -Message "[WhatIf Mode] Would perform '$Action' on: $($user.DistinguishedName) (Account enabled: $($user.Enabled))" -Level Warning
         return
     }
 
@@ -82,16 +82,8 @@ try {
                 $newPwd = New-ADAutoXRandomPassword -Length 20
                 $secPwd = ConvertTo-SecureString $newPwd -AsPlainText -Force
                 Set-ADAccountPassword -Identity $user.DistinguishedName -NewPassword $secPwd -Reset -ErrorAction Stop
-
-                $effectivePasswordFile = if ([string]::IsNullOrWhiteSpace($PasswordFile)) {
-                    Join-Path $rootDir ((Get-Date).ToString('yyyyMMdd-HHmmss') + '-user-password-reset.clixml')
-                } else {
-                    $PasswordFile
-                }
-
-                Export-ADAutoXCredentials -CredentialMap @{ $user.SamAccountName = $newPwd } -OutputPath $effectivePasswordFile -Overwrite
-                Write-ADAutoXConsole -Message "Password reset for '$Identity'. Secure credential export stored at '$effectivePasswordFile'." -Level Success
-                Write-ADAutoXLogRecord -LogPath $AuditLogPath -Action 'ResetPassword' -Target $user.DistinguishedName -Status 'Succeeded' -Details "Password exported to $effectivePasswordFile" -CorrelationId $correlationId
+                Write-ADAutoXConsole -Message "Password reset for '$Identity'. New Password: $newPwd" -Level Success
+                Write-ADAutoXLogRecord -LogPath $AuditLogPath -Action 'ResetPassword' -Target $user.DistinguishedName -Status 'Succeeded' -CorrelationId $correlationId
             }
         }
         'Move' {
@@ -107,15 +99,19 @@ try {
         'Terminate' {
             if ($PSCmdlet.ShouldProcess($user.DistinguishedName, 'Terminate AD User')) {
                 Disable-ADAccount -Identity $user.DistinguishedName -ErrorAction Stop
-                $note = "TERMINATED on $((Get-Date).ToString('yyyy-MM-dd'))" + $(if ($Reason) { " - Reason: $Reason" } else { '' })
-                $existingDescription = if ($user.Description) { [string]$user.Description } else { '' }
-                $combinedDescription = if ([string]::IsNullOrWhiteSpace($existingDescription)) { $note } else { "$existingDescription; $note" }
-                Set-ADUser -Identity $user.DistinguishedName -Description $combinedDescription -ErrorAction Stop
+
+                # Bug #24: append termination note to existing Description rather than overwriting it
+                $existingDescription = if ($null -ne $user.Description -and $user.Description.Length -gt 0) {
+                    "$($user.Description) | "
+                } else { '' }
+                $terminationNote = "${existingDescription}TERMINATED on $((Get-Date).ToString('yyyy-MM-dd'))" + $(if ($Reason) { " - Reason: $Reason" } else { '' })
+                Set-ADUser -Identity $user.DistinguishedName -Description $terminationNote -ErrorAction Stop
+
                 if ($TargetOU) {
                     Move-ADObject -Identity $user.DistinguishedName -TargetPath $TargetOU -ErrorAction Stop
                 }
                 Write-ADAutoXConsole -Message "User '$Identity' terminated successfully." -Level Success
-                Write-ADAutoXLogRecord -LogPath $AuditLogPath -Action 'TerminateUser' -Target $user.DistinguishedName -Status 'Succeeded' -Details $note -CorrelationId $correlationId
+                Write-ADAutoXLogRecord -LogPath $AuditLogPath -Action 'TerminateUser' -Target $user.DistinguishedName -Status 'Succeeded' -Details $terminationNote -CorrelationId $correlationId
             }
         }
     }

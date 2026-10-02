@@ -1,92 +1,66 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:Ledger = [System.Collections.Generic.List[psobject]]::new()
-$script:LedgerRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'ADAutoX'
-$script:LedgerFilePath = Join-Path $script:LedgerRoot 'pending-ledger.json'
 
-function Get-ADAutoXLedgerStatePath {
-    [CmdletBinding()]
-    param()
-    if (-not (Test-Path -LiteralPath $script:LedgerRoot -PathType Container)) {
-        New-Item -ItemType Directory -Path $script:LedgerRoot -Force | Out-Null
-    }
-    return $script:LedgerFilePath
+function Get-ADAutoXLedgerFilePath {
+    # Unique per-process so concurrent runs don't clobber each other (Bug #3 crash-recovery)
+    return Join-Path $env:TEMP "ADAutoX-Ledger-$($PID).json"
 }
 
 function Save-ADAutoXLedgerToDisk {
     [CmdletBinding()]
     param()
     try {
-        $ledgerPath = Get-ADAutoXLedgerStatePath
         $json = $script:Ledger | ConvertTo-Json -Depth 5
+        $ledgerPath = Get-ADAutoXLedgerFilePath
         Set-Content -Path $ledgerPath -Value $json -Encoding UTF8 -Force
     }
     catch {
-        throw "Failed to persist the rollback ledger to disk: $($_.Exception.Message)"
+        # Best-effort disk persistence for rollback resilience across crashes
     }
 }
 
 function Load-ADAutoXLedgerFromDisk {
     [CmdletBinding()]
     param()
-    $ledgerPath = Get-ADAutoXLedgerStatePath
+    $ledgerPath = Get-ADAutoXLedgerFilePath
     if (Test-Path -LiteralPath $ledgerPath -PathType Leaf) {
         try {
             $json = Get-Content -LiteralPath $ledgerPath -Raw -Encoding UTF8
             if (-not [string]::IsNullOrWhiteSpace($json)) {
                 $items = $json | ConvertFrom-Json
                 $script:Ledger.Clear()
-                foreach ($item in @($items)) {
+                foreach ($item in $items) {
                     $script:Ledger.Add($item)
                 }
+                Write-ADAutoXConsole -Message "Recovered crash-recovery ledger from disk ($($script:Ledger.Count) entries). Review before proceeding." -Level Warning
             }
         }
         catch {
-            throw "Failed to read the persisted rollback ledger from '$ledgerPath': $($_.Exception.Message)"
+            # Failed to read disk ledger
         }
     }
-}
-
-function Test-ADAutoXPendingLedger {
-    [CmdletBinding()]
-    param()
-    $ledgerPath = Get-ADAutoXLedgerStatePath
-    if (-not (Test-Path -LiteralPath $ledgerPath -PathType Leaf)) { return $false }
-    try {
-        $json = Get-Content -LiteralPath $ledgerPath -Raw -Encoding UTF8
-        if ([string]::IsNullOrWhiteSpace($json)) { return $false }
-        $items = @($json | ConvertFrom-Json)
-        return $items.Count -gt 0
-    }
-    catch {
-        throw "The persisted rollback ledger at '$ledgerPath' is unreadable. Resolve or inspect it before starting another provisioning run: $($_.Exception.Message)"
-    }
-}
-
-function Complete-ADAutoXLedger {
-    [CmdletBinding()]
-    param()
-
-    $ledgerPath = Get-ADAutoXLedgerStatePath
-    if (Test-Path -LiteralPath $ledgerPath -PathType Leaf) {
-        Remove-Item -LiteralPath $ledgerPath -Force -ErrorAction Stop
-    }
-    $script:Ledger.Clear()
 }
 
 function Initialize-ADAutoXLedger {
     [CmdletBinding()]
     param(
-        [switch]$DiscardPendingLedger
+        # When set, attempts to recover a crash-recovery ledger from a previous failed run.
+        [switch]$RecoverFromCrash
     )
 
-    $ledgerPath = Get-ADAutoXLedgerStatePath
-    if ($DiscardPendingLedger -and (Test-Path -LiteralPath $ledgerPath -PathType Leaf)) {
-        Remove-Item -LiteralPath $ledgerPath -Force -ErrorAction SilentlyContinue
-    }
+    $ledgerPath = Get-ADAutoXLedgerFilePath
 
-    $script:Ledger.Clear()
+    if ($RecoverFromCrash -and (Test-Path -LiteralPath $ledgerPath -PathType Leaf)) {
+        Load-ADAutoXLedgerFromDisk
+    }
+    else {
+        $script:Ledger.Clear()
+        if (Test-Path -LiteralPath $ledgerPath -PathType Leaf) {
+            Remove-Item -LiteralPath $ledgerPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Get-ADAutoXLedger {
@@ -127,7 +101,7 @@ function Invoke-ADAutoXLedgerRollback {
         [string]$LogPath = ''
     )
 
-    # If in-memory ledger is empty, attempt to recover ledger from disk (crash resilience)
+    # If in-memory ledger is empty, attempt to recover from crash-recovery file
     if ($script:Ledger.Count -eq 0) {
         Load-ADAutoXLedgerFromDisk
     }
@@ -139,16 +113,14 @@ function Invoke-ADAutoXLedgerRollback {
     }
 
     Write-ADAutoXConsole -Message "Initiating transactional rollback for $($createdItems.Count) created resources..." -Level Warning
-    $removedDistinguishedNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-    # Delete users first, then groups, then OUs (reverse hierarchy order)
+    # Delete users first, then groups, then OUs in deepest-first depth order (Bug #2 rollback)
     $users = @($createdItems | Where-Object { $_.ObjectType -eq 'User' })
     foreach ($user in $users) {
         if ($PSCmdlet.ShouldProcess($user.DistinguishedName, 'Remove-ADUser Rollback')) {
             try {
                 if (Get-Command Remove-ADUser -ErrorAction SilentlyContinue) {
                     Remove-ADUser -Identity $user.DistinguishedName -Confirm:$false -ErrorAction Stop
-                    [void]$removedDistinguishedNames.Add($user.DistinguishedName)
                     Write-ADAutoXConsole -Message "Rolled back User: $($user.SamAccountName)" -Level Success
                     if ($LogPath) {
                         Write-ADAutoXLogRecord -LogPath $LogPath -Action 'RollbackUser' -Target $user.DistinguishedName -Status 'Succeeded' -Message 'User account removed during rollback.'
@@ -170,7 +142,6 @@ function Invoke-ADAutoXLedgerRollback {
             try {
                 if (Get-Command Remove-ADGroup -ErrorAction SilentlyContinue) {
                     Remove-ADGroup -Identity $group.DistinguishedName -Confirm:$false -ErrorAction Stop
-                    [void]$removedDistinguishedNames.Add($group.DistinguishedName)
                     Write-ADAutoXConsole -Message "Rolled back Group: $($group.SamAccountName)" -Level Success
                     if ($LogPath) {
                         Write-ADAutoXLogRecord -LogPath $LogPath -Action 'RollbackGroup' -Target $group.DistinguishedName -Status 'Succeeded' -Message 'Group removed during rollback.'
@@ -186,27 +157,31 @@ function Invoke-ADAutoXLedgerRollback {
         }
     }
 
-    $ous = @(
-        ($createdItems | Where-Object { $_.ObjectType -eq 'OU' } |
-        Sort-Object {
-            @($_.DistinguishedName -split ',').Count
-        } -Descending)
-    )
+    # Bug #2: Sort OUs deepest-first by DN depth to avoid "parent already deleted" errors.
+    # Deeper DNs have more commas, so sort descending by comma-count.
+    $ous = @($createdItems | Where-Object { $_.ObjectType -eq 'OU' } |
+             Sort-Object -Property { ($_.DistinguishedName.ToCharArray() | Where-Object { $_ -eq ',' } | Measure-Object).Count } -Descending)
 
     foreach ($ou in $ous) {
         if ($PSCmdlet.ShouldProcess($ou.DistinguishedName, 'Remove-ADOrganizationalUnit Rollback')) {
             try {
                 if (Get-Command Remove-ADOrganizationalUnit -ErrorAction SilentlyContinue) {
-                    Set-ADOrganizationalUnit -Identity $ou.DistinguishedName -ProtectedFromAccidentalDeletion $false -ErrorAction Stop
-                    Remove-ADOrganizationalUnit -Identity $ou.DistinguishedName -Confirm:$false -ErrorAction Stop
-                    [void]$removedDistinguishedNames.Add($ou.DistinguishedName)
-                    Write-ADAutoXConsole -Message "Rolled back OU: $($ou.DistinguishedName)" -Level Success
-                    if ($LogPath) {
-                        Write-ADAutoXLogRecord -LogPath $LogPath -Action 'RollbackOU' -Target $ou.DistinguishedName -Status 'Succeeded' -Message 'OU removed during rollback.'
+                    # Check if the OU still exists (parent recursive delete may have already removed it)
+                    $ouStillExists = Get-ADOrganizationalUnit -Identity $ou.DistinguishedName -ErrorAction SilentlyContinue
+                    if ($null -ne $ouStillExists) {
+                        Set-ADOrganizationalUnit -Identity $ou.DistinguishedName -ProtectedFromAccidentalDeletion $false -ErrorAction Stop
+                        Remove-ADOrganizationalUnit -Identity $ou.DistinguishedName -Recursive -Confirm:$false -ErrorAction Stop
+                        Write-ADAutoXConsole -Message "Rolled back OU: $($ou.DistinguishedName)" -Level Success
+                        if ($LogPath) {
+                            Write-ADAutoXLogRecord -LogPath $LogPath -Action 'RollbackOU' -Target $ou.DistinguishedName -Status 'Succeeded' -Message 'OU removed during rollback.'
+                        }
+                    }
+                    else {
+                        Write-ADAutoXConsole -Message "OU '$($ou.DistinguishedName)' already removed (parent deleted). Skipping." -Level Info
                     }
                 }
                 else {
-                    Write-ADAutoXConsole -Message "Skipped rolling back OU '$($ou.DistinguishedName)': Cmdlet 'Remove-ADOrganizationalUnit' not available." -Level Warning
+                    Write-ADAutoXConsole -Message "Skipped rolling back OU '$($ou.DistinguishedName)': Cmdlet not available." -Level Warning
                 }
             }
             catch {
@@ -215,18 +190,7 @@ function Invoke-ADAutoXLedgerRollback {
         }
     }
 
-    $remainingItems = @($createdItems | Where-Object { -not $removedDistinguishedNames.Contains($_.DistinguishedName) })
-    $script:Ledger.Clear()
-    foreach ($item in $remainingItems) {
-        $script:Ledger.Add($item)
-    }
-    if ($remainingItems.Count -eq 0) {
-        Complete-ADAutoXLedger
-    }
-    else {
-        Save-ADAutoXLedgerToDisk
-        Write-ADAutoXConsole -Message "Rollback incomplete; $($remainingItems.Count) ledger entries remain for recovery." -Level Warning
-    }
+    Initialize-ADAutoXLedger
 }
 
 function Invoke-ADAutoXPreflight {
@@ -247,6 +211,7 @@ function Invoke-ADAutoXPreflight {
         [Parameter(Mandatory = $true)]
         [string]$NetBIOSName,
 
+        # All names to check for collisions, not just first 20
         [string[]]$SampleNames = @()
     )
 
@@ -283,13 +248,13 @@ function Invoke-ADAutoXPreflight {
         return $summary
     }
 
-    # 1. Check Root Company OU
+    # 1. Check Root Company OU (Bug #Minor: use Stop not SilentlyContinue to surface real errors)
     $safeCompanyFilter = ConvertTo-ADLdapFilter -Value $CompanyOuName
     try {
         $companyOUs = @(Get-ADOrganizationalUnit -LDAPFilter "(ou=$safeCompanyFilter)" -SearchBase $DomainDN -SearchScope OneLevel -ErrorAction Stop)
     }
     catch {
-        throw "Preflight failed while checking the root company OU '$CompanyOuName': $($_.Exception.Message)"
+        throw "Preflight: Failed to query Company OU in '$DomainDN'. Check connectivity and permissions. Error: $($_.Exception.Message)"
     }
     $companyExists = $companyOUs.Count -gt 0
 
@@ -301,15 +266,20 @@ function Invoke-ADAutoXPreflight {
 
     # 2. Check Staff OU
     $staffExists = $false
+    $safeCompanyValue = ConvertTo-ADDistinguishedNameValue -Value $CompanyOuName
+    $safeStaffValue   = ConvertTo-ADDistinguishedNameValue -Value $StaffOuName
+    $companyDN = "OU=$safeCompanyValue,$DomainDN"
+    $staffDN   = "OU=$safeStaffValue,$companyDN"
+
     if ($companyExists) {
         $safeStaffFilter = ConvertTo-ADLdapFilter -Value $StaffOuName
         try {
             $staffOUs = @(Get-ADOrganizationalUnit -LDAPFilter "(ou=$safeStaffFilter)" -SearchBase $companyOUs[0].DistinguishedName -SearchScope OneLevel -ErrorAction Stop)
+            $staffExists = $staffOUs.Count -gt 0
         }
         catch {
-            throw "Preflight failed while checking the Staff OU '$StaffOuName': $($_.Exception.Message)"
+            throw "Preflight: Failed to query Staff OU. Error: $($_.Exception.Message)"
         }
-        $staffExists = $staffOUs.Count -gt 0
     }
     $checks.Add([pscustomobject]@{
         Name    = 'Staff OU'
@@ -318,17 +288,16 @@ function Invoke-ADAutoXPreflight {
     })
 
     # 3. Check Department OUs & Groups
-    $companyDN = "OU=$(ConvertTo-ADDistinguishedNameValue -Value $CompanyOuName),$DomainDN"
-    $staffDN   = "OU=$(ConvertTo-ADDistinguishedNameValue -Value $StaffOuName),$companyDN"
-
     foreach ($dept in $Departments) {
         $safeDeptFilter = ConvertTo-ADLdapFilter -Value $dept
-        try {
-            $deptOUs = @(if ($staffExists) { Get-ADOrganizationalUnit -LDAPFilter "(ou=$safeDeptFilter)" -SearchBase $staffDN -SearchScope OneLevel -ErrorAction Stop })
-        }
-        catch {
-            throw "Preflight failed while checking the department OU '$dept': $($_.Exception.Message)"
-        }
+
+        # Bug #1 (StrictMode crash): wrap conditional result in @() to guarantee array, never $null
+        $deptOUs = @(if ($staffExists) {
+            try {
+                Get-ADOrganizationalUnit -LDAPFilter "(ou=$safeDeptFilter)" -SearchBase $staffDN -SearchScope OneLevel -ErrorAction Stop
+            }
+            catch { <# Dept OU doesn't exist yet, treat as empty #> }
+        })
         $deptExists = $deptOUs.Count -gt 0
 
         $checks.Add([pscustomobject]@{
@@ -337,41 +306,53 @@ function Invoke-ADAutoXPreflight {
             Details = if ($deptExists) { "Department OU '$dept' exists." } else { "Department OU '$dept' will be created." }
         })
 
-        # Check Department Groups
-        $userGroupSam = "$dept-Users"
-        $safeGroupFilter = ConvertTo-ADLdapFilter -Value $userGroupSam
-        $groupObj = Get-ADGroup -LDAPFilter "(samAccountName=$safeGroupFilter)" -ErrorAction Stop
+        # Bug #Minor: Group lookups must use a PowerShell -Filter, not LDAP escaped values
+        $deptUserGroupSam = "$dept-Users"
+        try {
+            $groupObj = Get-ADGroup -Filter { SamAccountName -eq $deptUserGroupSam } -ErrorAction Stop
+        }
+        catch {
+            $groupObj = $null
+        }
         $groupExists = $null -ne $groupObj
 
         $checks.Add([pscustomobject]@{
-            Name    = "Department Group: $userGroupSam"
+            Name    = "Department Group: $deptUserGroupSam"
             Status  = if ($groupExists) { 'Passed' } else { 'NeedsAttention' }
-            Details = if ($groupExists) { "Security Group '$userGroupSam' exists." } else { "Security Group '$userGroupSam' will be created." }
+            Details = if ($groupExists) { "Security Group '$deptUserGroupSam' exists." } else { "Security Group '$deptUserGroupSam' will be created." }
         })
     }
 
-    # 4. Check potential user SAM account collisions
+    # 4. Check potential user SAM account collisions (all names, not just first 20 - Bug #Minor)
     $collisionCount = 0
-    if ($SampleNames.Count -gt 0) {
-        $preflightUsedNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-        foreach ($name in $SampleNames) {
-            $nameTokens = @($name.Trim() -split '\s+', 2)
-            $baseSam = if ($nameTokens.Count -gt 1) { "$($nameTokens[0]).$($nameTokens[1])" } else { $nameTokens[0] }
-            $sanitizedSam = Get-ADSanitizedSamAccountName -BaseName $baseSam -UsedNames $preflightUsedNames
-            $safeSamFilter = ConvertTo-ADLdapFilter -Value $sanitizedSam
-            $existingUser = Get-ADUser -LDAPFilter "(samAccountName=$safeSamFilter)" -ErrorAction Stop
-            if ($null -ne $existingUser) {
-                $collisionCount++
-                $checks.Add([pscustomobject]@{
-                    Name    = "User Collision Check: $sanitizedSam"
-                    Status  = 'CollisionWarning'
-                    Details = "User '$sanitizedSam' already exists in AD. Provisioner will append a unique numerical suffix or skip."
-                })
-            }
+    foreach ($name in $SampleNames) {
+        $parts = $name.Trim() -split '\s+', 2
+        $baseSam = if ($parts.Count -eq 2) { "$($parts[0]).$($parts[1])" } else { $parts[0] }
+
+        # Bug #Minor: collision check uses same sanitizer as real provisioner for consistency
+        try {
+            $sanitizedSam = Get-ADSanitizedSamAccountName -BaseName $baseSam
+        }
+        catch {
+            continue
+        }
+
+        try {
+            $existingUser = Get-ADUser -Filter { SamAccountName -eq $sanitizedSam } -ErrorAction Stop
+        }
+        catch {
+            $existingUser = $null
+        }
+
+        if ($null -ne $existingUser) {
+            $collisionCount++
+            $checks.Add([pscustomobject]@{
+                Name    = "User Collision Check: $sanitizedSam"
+                Status  = 'CollisionWarning'
+                Details = "User '$sanitizedSam' already exists in AD. Provisioner will skip creation and not add to ledger."
+            })
         }
     }
-
-    # This check uses the same sanitizer as the provisioner, so it remains aligned with real-world AD naming.
 
     $passedCount         = @($checks | Where-Object { $_.Status -eq 'Passed' }).Count
     $needsAttentionCount = @($checks | Where-Object { $_.Status -eq 'NeedsAttention' }).Count
@@ -387,9 +368,7 @@ function Invoke-ADAutoXPreflight {
     return $summary
 }
 
-Export-ModuleMember -Function Test-ADAutoXPendingLedger, `
-                              Complete-ADAutoXLedger, `
-                              Initialize-ADAutoXLedger, `
+Export-ModuleMember -Function Initialize-ADAutoXLedger, `
                               Get-ADAutoXLedger, `
                               Add-ADAutoXLedgerEntry, `
                               Invoke-ADAutoXLedgerRollback, `

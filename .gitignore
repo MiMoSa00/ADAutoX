@@ -1,11 +1,14 @@
 # Security & Sensitive Files
-user-passwords.clixml
+user-passwords*.clixml
 *.clixml
 
 # Generated Runtime Logs & Reports
 ADAutoX-Audit.jsonl
 ADAutoX-Provisioning-Report.csv
 *.log
+
+# Crash-Recovery Ledger (runtime artifact, per-PID, never committed)
+ADAutoX-Ledger-*.json
 
 # Temp & Scratch
 scratch/

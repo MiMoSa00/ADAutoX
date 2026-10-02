@@ -1,4 +1,4 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:SavedDefaultParams = $null
@@ -50,7 +50,7 @@ function Initialize-ADAutoXContext {
 
         # Save existing parameter defaults
         $script:SavedDefaultParams = @{
-            Server = if ($global:PSDefaultParameterValues.ContainsKey('*-AD*:Server')) { $global:PSDefaultParameterValues['*-AD*:Server'] } else { $null }
+            Server     = if ($global:PSDefaultParameterValues.ContainsKey('*-AD*:Server')) { $global:PSDefaultParameterValues['*-AD*:Server'] } else { $null }
             Credential = if ($global:PSDefaultParameterValues.ContainsKey('*-AD*:Credential')) { $global:PSDefaultParameterValues['*-AD*:Credential'] } else { $null }
         }
 
@@ -71,6 +71,8 @@ function Initialize-ADAutoXContext {
 
         $global:PSDefaultParameterValues['*-AD*:Server'] = $resolvedServer
 
+        # Bug #23: always remove and recreate the AD: drive to avoid reusing a stale drive
+        # from a crashed previous run that was pointed at a different server.
         if (Get-PSDrive -Name AD -ErrorAction SilentlyContinue) {
             Remove-PSDrive -Name AD -Force -ErrorAction SilentlyContinue
         }
@@ -87,12 +89,12 @@ function Initialize-ADAutoXContext {
 
         $domainInfo = Get-ADDomain -Server $resolvedServer -ErrorAction Stop
         return [pscustomobject]@{
-            Server         = $resolvedServer
-            DomainName     = $domainInfo.DNSRoot
-            Forest         = $domainInfo.Forest
-            DomainDN       = $domainInfo.DistinguishedName
-            NetBIOSName    = $domainInfo.NetBIOSName
-            UPNSuffixes    = $domainInfo.UPNSuffixes
+            Server      = $resolvedServer
+            DomainName  = $domainInfo.DNSRoot
+            Forest      = $domainInfo.Forest
+            DomainDN    = $domainInfo.DistinguishedName
+            NetBIOSName = $domainInfo.NetBIOSName
+            UPNSuffixes = $domainInfo.UPNSuffixes
         }
     }
     catch {
