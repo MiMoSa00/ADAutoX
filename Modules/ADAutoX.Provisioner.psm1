@@ -13,8 +13,14 @@ function Save-ADAutoXLedgerToDisk {
     [CmdletBinding()]
     param()
     try {
-        $json = $script:Ledger | ConvertTo-Json -Depth 5
         $ledgerPath = Get-ADAutoXLedgerFilePath
+        if ($null -eq $script:Ledger -or $script:Ledger.Count -eq 0) {
+            if (Test-Path -LiteralPath $ledgerPath -PathType Leaf) {
+                Remove-Item -LiteralPath $ledgerPath -Force -ErrorAction SilentlyContinue
+            }
+            return
+        }
+        $json = $script:Ledger.ToArray() | ConvertTo-Json -Depth 5
         Set-Content -Path $ledgerPath -Value $json -Encoding UTF8 -Force
     }
     catch {
@@ -30,12 +36,16 @@ function Load-ADAutoXLedgerFromDisk {
         try {
             $json = Get-Content -LiteralPath $ledgerPath -Raw -Encoding UTF8
             if (-not [string]::IsNullOrWhiteSpace($json)) {
-                $items = $json | ConvertFrom-Json
+                $items = @($json | ConvertFrom-Json)
                 $script:Ledger.Clear()
                 foreach ($item in $items) {
-                    $script:Ledger.Add($item)
+                    if ($null -ne $item) {
+                        $script:Ledger.Add($item)
+                    }
                 }
-                Write-ADAutoXConsole -Message "Recovered crash-recovery ledger from disk ($($script:Ledger.Count) entries). Review before proceeding." -Level Warning
+                if ($script:Ledger.Count -gt 0) {
+                    Write-ADAutoXConsole -Message "Recovered crash-recovery ledger from disk ($($script:Ledger.Count) entries). Review before proceeding." -Level Warning
+                }
             }
         }
         catch {
@@ -161,7 +171,12 @@ function Invoke-ADAutoXLedgerRollback {
     # Bug #2: Sort OUs deepest-first by DN depth to avoid "parent already deleted" errors.
     # Deeper DNs have more commas, so sort descending by comma-count.
     $ous = @($createdItems | Where-Object { $_.ObjectType -eq 'OU' } |
-             Sort-Object -Property { ($_.DistinguishedName.ToCharArray() | Where-Object { $_ -eq ',' } | Measure-Object).Count } -Descending)
+             Sort-Object -Property {
+                 if ($_.DistinguishedName) {
+                     return ([regex]::Matches($_.DistinguishedName, ',')).Count
+                 }
+                 return 0
+             } -Descending)
 
     foreach ($ou in $ous) {
         if ($PSCmdlet.ShouldProcess($ou.DistinguishedName, 'Remove-ADOrganizationalUnit Rollback')) {

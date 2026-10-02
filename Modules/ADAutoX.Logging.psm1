@@ -63,6 +63,8 @@ function Write-ADAutoXLogRecord {
         [string]$CorrelationId = ''
     )
 
+    if ([string]::IsNullOrWhiteSpace($LogPath)) { return }
+
     $parentDir = Split-Path -Parent ([System.IO.Path]::GetFullPath($LogPath))
     if ($parentDir -and -not (Test-Path -LiteralPath $parentDir)) {
         New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
@@ -70,7 +72,10 @@ function Write-ADAutoXLogRecord {
 
     # Cross-platform identity resolution (Bug #25 / Claude finding):
     # [WindowsIdentity]::GetCurrent() throws on Linux/macOS. Fall back to env variables.
-    $actorName = ''
+    $computerName = [Environment]::MachineName
+    $userName     = [Environment]::UserName
+    $actorName    = "$computerName\$userName"
+
     try {
         $isWindows = $false
         if ($PSVersionTable.PSVersion.Major -ge 6) {
@@ -80,22 +85,19 @@ function Write-ADAutoXLogRecord {
             $isWindows = $env:OS -like '*Windows*'
         }
 
-        $computerName = [Environment]::MachineName
-        $userName     = [Environment]::UserName
-
         if ($isWindows) {
             try {
-                $actorName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+                $winIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+                if (-not [string]::IsNullOrWhiteSpace($winIdentity)) {
+                    $actorName = $winIdentity
+                }
             } catch {
-                $actorName = "$computerName\$userName"
+                # Keep fallback $actorName
             }
-        } else {
-            $actorName = "$computerName\$userName"
         }
     }
     catch {
-        $computerName = [Environment]::MachineName
-        $actorName    = [Environment]::UserName
+        # Keep fallback $actorName
     }
 
     $effectiveCorrelationId = if (-not [string]::IsNullOrWhiteSpace($CorrelationId)) { $CorrelationId } else { $script:CurrentCorrelationId }
