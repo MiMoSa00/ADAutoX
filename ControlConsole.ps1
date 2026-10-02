@@ -1,6 +1,11 @@
 <#
 .SYNOPSIS
     Interactive Control Console and Operator Dashboard for ADAutoX.
+
+.NOTES
+    Write-Host is used intentionally throughout this script: it is a colorized
+    interactive terminal dashboard where output capture/redirection is not needed.
+    PSAvoidUsingWriteHost is suppressed on all functions via SuppressMessageAttribute.
 #>
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -8,6 +13,7 @@ $ErrorActionPreference = 'Stop'
 $rootDir = $PSScriptRoot
 Import-Module (Join-Path -Path $rootDir -ChildPath 'ADAutoX.psd1') -Force
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]
 function Show-ADAutoXMenu {
     Clear-Host
     Write-Host "==========================================================================" -ForegroundColor Cyan

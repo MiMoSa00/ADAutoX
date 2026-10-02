@@ -78,28 +78,29 @@ function Write-ADAutoXLogRecord {
     $userName     = [Environment]::UserName
     $actorName    = "$computerName\$userName"
 
+    # PSAvoidAssignmentToAutomaticVariable: use $onWindows (not $isWindows which is a PS6+ readonly automatic variable)
     try {
-        $isWindows = $false
+        $onWindows = $false
         if ($PSVersionTable.PSVersion.Major -ge 6) {
-            $isWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+            $onWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
                 [System.Runtime.InteropServices.OSPlatform]::Windows)
         } else {
-            $isWindows = $env:OS -like '*Windows*'
+            $onWindows = $env:OS -like '*Windows*'
         }
 
-        if ($isWindows) {
+        if ($onWindows) {
             try {
                 $winIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
                 if (-not [string]::IsNullOrWhiteSpace($winIdentity)) {
                     $actorName = $winIdentity
                 }
             } catch {
-                # Keep fallback $actorName
+                Write-Verbose "[ADAutoX.Logging] WindowsIdentity unavailable; using Environment fallback for actor name."
             }
         }
     }
     catch {
-        # Keep fallback $actorName
+        Write-Verbose "[ADAutoX.Logging] OS platform detection failed; using Environment fallback for actor name."
     }
 
     $effectiveCorrelationId = if (-not [string]::IsNullOrWhiteSpace($CorrelationId)) { $CorrelationId } else { $script:CurrentCorrelationId }

@@ -24,11 +24,11 @@ function Save-ADAutoXLedgerToDisk {
         Set-Content -Path $ledgerPath -Value $json -Encoding UTF8 -Force
     }
     catch {
-        # Best-effort disk persistence for rollback resilience across crashes
+        Write-Verbose "[ADAutoX.Provisioner] Best-effort ledger save failed (disk full or locked): $($_.Exception.Message)"
     }
 }
 
-function Load-ADAutoXLedgerFromDisk {
+function Import-ADAutoXLedgerFromDisk {
     [CmdletBinding()]
     param()
     $ledgerPath = Get-ADAutoXLedgerFilePath
@@ -49,7 +49,7 @@ function Load-ADAutoXLedgerFromDisk {
             }
         }
         catch {
-            # Failed to read disk ledger
+            Write-Verbose "[ADAutoX.Provisioner] Could not read crash-recovery ledger from disk: $($_.Exception.Message)"
         }
     }
 }
@@ -68,7 +68,7 @@ function Initialize-ADAutoXLedger {
     }
 
     if ($RecoverFromCrash -and (Test-Path -LiteralPath $ledgerPath -PathType Leaf)) {
-        Load-ADAutoXLedgerFromDisk
+        Import-ADAutoXLedgerFromDisk
     }
     else {
         $script:Ledger.Clear()
@@ -125,7 +125,7 @@ function Invoke-ADAutoXLedgerRollback {
 
     # If in-memory ledger is empty, attempt to recover from crash-recovery file
     if ($null -eq $script:Ledger -or $script:Ledger.Count -eq 0) {
-        Load-ADAutoXLedgerFromDisk
+        Import-ADAutoXLedgerFromDisk
     }
 
     $createdItems = @($script:Ledger | Where-Object { $_.CreatedByThisRun -eq $true })
@@ -235,14 +235,16 @@ function Invoke-ADAutoXPreflight {
         [Parameter(Mandatory = $true)]
         [string]$DomainDN,
 
-        [Parameter(Mandatory = $true)]
-        [string]$NetBIOSName,
+        # NetBIOSName is passed from the calling context for future use (e.g. UPN suffix validation)
+        [string]$NetBIOSName = '',
 
         # All names to check for collisions, not just first 20
         [string[]]$SampleNames = @()
     )
 
     Write-ADAutoXConsole -Message 'Phase 1: Preflight Validation (Non-mutating)' -Level Phase
+    # $NetBIOSName is retained for forward-compatibility (callers pass it; will be used for UPN suffix validation in a future release)
+    $null = $NetBIOSName
     $checks = [System.Collections.Generic.List[psobject]]::new()
 
     # If RSAT / Active Directory module cmdlets are not present on local machine, simulate preflight
@@ -323,7 +325,9 @@ function Invoke-ADAutoXPreflight {
             try {
                 Get-ADOrganizationalUnit -LDAPFilter "(ou=$safeDeptFilter)" -SearchBase $staffDN -SearchScope OneLevel -ErrorAction Stop
             }
-            catch { <# Dept OU doesn't exist yet, treat as empty #> }
+            catch {
+                Write-Verbose "[ADAutoX.Provisioner] Department OU '$dept' not found in AD (will be created in Phase 2)."
+            }
         })
         $deptExists = $deptOUs.Count -gt 0
 
