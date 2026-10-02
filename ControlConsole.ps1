@@ -31,32 +31,51 @@ while ($true) {
     switch ($choice) {
         '1' {
             Write-Host "`n[Preview Provisioning Mode]" -ForegroundColor Yellow
-            $countInput = Read-Host "Enter number of accounts to preview (Default: 5)"
-            $count = if ($countInput) { [int]$countInput } else { 5 }
-            powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Invoke-ADAutoXProvision.ps1') -AccountCount $count -WhatIf
+            try {
+                $countInput = Read-Host "Enter number of accounts to preview (Default: 5)"
+                $count = if ([string]::IsNullOrWhiteSpace($countInput)) { 5 } else { [int]$countInput }
+                powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Invoke-ADAutoXProvision.ps1') -AccountCount $count -WhatIf
+            }
+            catch {
+                Write-Host "Invalid input. Please enter a whole number." -ForegroundColor Red
+            }
             Read-Host "`nPress Enter to return to menu..."
         }
         '2' {
             Write-Host "`n[Live Bulk Provisioning Mode]" -ForegroundColor Green
-            $countInput = Read-Host "Enter number of accounts to provision (Default: 20)"
-            $count = if ($countInput) { [int]$countInput } else { 20 }
-            powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Invoke-ADAutoXProvision.ps1') -AccountCount $count -RollbackOnFailure
+            try {
+                $countInput = Read-Host "Enter number of accounts to provision (Default: 20)"
+                $count = if ([string]::IsNullOrWhiteSpace($countInput)) { 20 } else { [int]$countInput }
+                powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Invoke-ADAutoXProvision.ps1') -AccountCount $count -RollbackOnFailure
+            }
+            catch {
+                Write-Host "Invalid input. Please enter a whole number." -ForegroundColor Red
+            }
             Read-Host "`nPress Enter to return to menu..."
         }
         '3' {
             Write-Host "`n[Audit Log Viewer]" -ForegroundColor White
-            powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Get-ADAutoXAuditReport.ps1')
+            $identityFilter = Read-Host "Optional Identity filter (blank for all)"
+            $actionFilter   = Read-Host "Optional Action filter (blank for all)"
+            $statusFilter   = Read-Host "Optional Status filter (blank for all)"
+            $actorFilter    = Read-Host "Optional Actor filter (blank for all)"
+            powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Get-ADAutoXAuditReport.ps1') -Identity $identityFilter -Action $actionFilter -Status $statusFilter -Actor $actorFilter
             Read-Host "`nPress Enter to return to menu..."
         }
         '4' {
             Write-Host "`n[Security Posture Scan]" -ForegroundColor White
-            Get-ADAutoXSecurityScan
+            $searchBase = Read-Host "Optional SearchBase (blank for default forest)"
+            $inactiveDaysInput = Read-Host "Inactive days threshold (Default: 90)"
+            $scanParams = @{}
+            if ($searchBase) { $scanParams.SearchBase = $searchBase }
+            if ($inactiveDaysInput) { $scanParams.InactiveDays = [int]$inactiveDaysInput }
+            Get-ADAutoXSecurityScan @scanParams
             Read-Host "`nPress Enter to return to menu..."
         }
         '5' {
             Write-Host "`n[Manage User Lifecycle]" -ForegroundColor White
             $identity = Read-Host "Enter target SamAccountName (e.g. chinedu.okafor)"
-            $action   = Read-Host "Enter Action (Enable, Disable, Unlock, ResetPassword, Terminate)"
+            $action   = Read-Host "Enter Action (Enable, Disable, Unlock, ResetPassword, Move, Terminate)"
             if ($identity -and $action) {
                 powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Manage-ADAutoXUser.ps1') -Identity $identity -Action $action
             }
@@ -65,7 +84,7 @@ while ($true) {
         '6' {
             Write-Host "`n[Reset / Teardown Lab Environment]" -ForegroundColor Red
             $confirm = Read-Host "Type 'DELETE' to confirm environment teardown"
-            if ($confirm -eq 'DELETE') {
+            if ($confirm -ceq 'DELETE') {
                 powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Reset-ADAutoXEnvironment.ps1') -AllowDestructiveOperation
             } else {
                 Write-Host "Reset cancelled." -ForegroundColor Yellow

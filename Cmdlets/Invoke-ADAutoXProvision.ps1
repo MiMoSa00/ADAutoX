@@ -26,7 +26,6 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$StaffOuName = 'Staff',
 
-    [ValidateNotNullOrEmpty()]
     [string]$NamesPath = '',
 
     [string[]]$Departments = @('IT', 'HR', 'Finance', 'Sales'),
@@ -34,6 +33,8 @@ param(
     [switch]$CreateDepartmentAdministrators = $true,
 
     [switch]$RollbackOnFailure = $true,
+
+    [switch]$DiscardPendingLedger,
 
     [string]$PasswordFile = '',
 
@@ -69,11 +70,15 @@ if ([string]::IsNullOrWhiteSpace($ReportPath)) {
     $ReportPath = Join-Path $rootDir 'ADAutoX-Provisioning-Report.csv'
 }
 if ([string]::IsNullOrWhiteSpace($PasswordFile)) {
-    $PasswordFile = Join-Path $rootDir 'user-passwords.clixml'
+    $PasswordFile = Join-Path $rootDir ((Get-Date).ToString('yyyyMMdd-HHmmss') + '-user-passwords.clixml')
 }
 
 $correlationId = New-ADAutoXCorrelationId
 Write-ADAutoXConsole -Message "Starting ADAutoX Provisioning Session [CorrelationID: $correlationId]" -Level Phase
+
+if (Test-ADAutoXPendingLedger -and -not $DiscardPendingLedger) {
+    throw "A previous ADAutoX run left a pending rollback ledger in '$($script:LedgerFilePath)'. Resolve it with Invoke-ADAutoXLedgerRollback or rerun with -DiscardPendingLedger."
+}
 
 # Parse names file
 if (-not (Test-Path -LiteralPath $NamesPath -PathType Leaf)) {
@@ -85,13 +90,17 @@ $namePairs = [System.Collections.Generic.List[psobject]]::new()
 foreach ($line in $rawNames) {
     $trimmed = $line.Trim()
     if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
-    $parts = $trimmed -split '\s+', 2
-    if ($parts.Count -eq 2) {
-        $namePairs.Add([pscustomobject]@{ FirstName = $parts[0]; LastName = $parts[1] })
+
+    if ($trimmed -match '^(?<FirstName>.+?)\s+(?<LastName>.+)$') {
+        $firstName = $Matches.FirstName.Trim()
+        $lastName  = $Matches.LastName.Trim()
+        if (-not [string]::IsNullOrWhiteSpace($firstName) -and -not [string]::IsNullOrWhiteSpace($lastName)) {
+            $namePairs.Add([pscustomobject]@{ FirstName = $firstName; LastName = $lastName })
+            continue
+        }
     }
-    elseif ($parts.Count -eq 1) {
-        $namePairs.Add([pscustomobject]@{ FirstName = $parts[0]; LastName = $parts[0] })
-    }
+
+    $namePairs.Add([pscustomobject]@{ FirstName = $trimmed; LastName = '' })
 }
 
 if ($namePairs.Count -eq 0) {
@@ -130,6 +139,7 @@ else {
     }
     catch {
         Write-ADAutoXConsole -Message "Active Directory connection failed: $($_.Exception.Message)" -Level Error
+        Clear-ADAutoXContext
         throw
     }
 }
@@ -138,7 +148,7 @@ $effectiveUpnSuffix = if ($UPNSuffix) { $UPNSuffix } else { $adInfo.DomainName }
 
 try {
     # Extract raw string list for preflight user collision checks
-    $sampleNameList = @($namePairs | Select-Object -First 20 | ForEach-Object { "$($_.FirstName) $($_.LastName)" })
+    $sampleNameList = @($namePairs | ForEach-Object { if ([string]::IsNullOrWhiteSpace($_.LastName)) { $_.FirstName } else { "$($_.FirstName) $($_.LastName)" } })
 
     # Phase 1: Preflight
     $preflight = Invoke-ADAutoXPreflight -CompanyOuName $CompanyOuName `
@@ -154,9 +164,10 @@ try {
 
     # Phase 2: Execution & Provisioning
     Write-ADAutoXConsole -Message "Phase 2: Execution & Provisioning" -Level Phase
-    Initialize-ADAutoXLedger
+    Initialize-ADAutoXLedger -DiscardPendingLedger:$DiscardPendingLedger
     $createdCredentials = @{}
     $reportRows = [System.Collections.Generic.List[psobject]]::new()
+    $expectedMemberships = [System.Collections.Generic.List[psobject]]::new()
     $usedSamNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
     # Sanitize base OU names for DistinguishedName building
@@ -332,7 +343,7 @@ try {
 
     # 4. Provision Users & Assign Group Memberships
     $deptIndex = 0
-    $countToCreate = if ($AccountCount -eq 0) { $namePairs.Count } else { $AccountCount }
+    $countToCreate = if ($AccountCount -le 0) { 0 } elseif ($AccountCount -gt $namePairs.Count) { $namePairs.Count } else { $AccountCount }
 
     for ($i = 0; $i -lt $countToCreate; $i++) {
         $identity = $namePairs[$i % $namePairs.Count]
@@ -351,7 +362,7 @@ try {
         $samName = Get-ADSanitizedSamAccountName -BaseName $baseSam -UsedNames $usedSamNames
         $upn     = Get-ADSanitizedUserPrincipalName -SamAccountName $samName -UPNSuffix $effectiveUpnSuffix
         
-        $fullName       = if ($firstName -eq $lastName) { $firstName } else { "$firstName $lastName" }
+        $fullName       = if ([string]::IsNullOrWhiteSpace($lastName) -or $firstName -eq $lastName) { $firstName } else { "$firstName $lastName" }
         $safeFullName   = ConvertTo-ADDistinguishedNameValue -Value $fullName
         $userDN         = "CN=$safeFullName,$deptUsersDN"
         $userPassword   = New-ADAutoXRandomPassword -Length 20
@@ -362,39 +373,53 @@ try {
                 $safeUserFilter = ConvertTo-ADLdapFilter -Value $samName
                 $existingUser = Get-ADUser -Filter "SamAccountName -eq '$safeUserFilter'" -ErrorAction SilentlyContinue
                 if ($null -eq $existingUser) {
-                    $secPassword = ConvertTo-SecureString $userPassword -AsPlainText -Force
-                    New-ADUser -Name $fullName `
-                               -GivenName $firstName `
-                               -Surname $lastName `
-                               -SamAccountName $samName `
-                               -UserPrincipalName $upn `
-                               -Department $dept `
-                               -Company $CompanyOuName `
-                               -Path $deptUsersDN `
-                               -AccountPassword $secPassword `
-                               -Enabled $true `
-                               -ChangePasswordAtLogon $false `
-                               -ErrorAction Stop
+                    $userCreationArgs = @{
+                        Name = $fullName
+                        GivenName = $firstName
+                        SamAccountName = $samName
+                        UserPrincipalName = $upn
+                        Department = $dept
+                        Company = $CompanyOuName
+                        Path = $deptUsersDN
+                        AccountPassword = (ConvertTo-SecureString $userPassword -AsPlainText -Force)
+                        Enabled = $true
+                        ChangePasswordAtLogon = $false
+                        ErrorAction = 'Stop'
+                    }
+
+                    if (-not [string]::IsNullOrWhiteSpace($lastName) -and $lastName -ne $firstName) {
+                        $userCreationArgs['Surname'] = $lastName
+                    }
+
+                    New-ADUser @userCreationArgs
                     $userWasCreated = $true
 
                     # Add user to standard department security group
                     $deptUserGroupSam = "$dept-Users"
                     try {
                         if (Get-Command Add-ADGroupMember -ErrorAction SilentlyContinue) {
-                            Add-ADGroupMember -Identity $deptUserGroupSam -Members $samName -ErrorAction SilentlyContinue
+                            Add-ADGroupMember -Identity $deptUserGroupSam -Members $samName -ErrorAction Stop
+                            $expectedMemberships.Add([pscustomobject]@{ SamAccountName = $samName; GroupName = $deptUserGroupSam })
                         }
-                    } catch {}
+                    }
+                    catch {
+                        throw "Failed to add '$samName' to '$deptUserGroupSam': $($_.Exception.Message)"
+                    }
 
                     # Delegate first user of department to Department Admins group if requested
                     if ($CreateDepartmentAdministrators -and -not $deptAdminAssigned.ContainsKey($dept)) {
                         $deptAdminGroupSam = "$dept-Admins"
                         try {
                             if (Get-Command Add-ADGroupMember -ErrorAction SilentlyContinue) {
-                                Add-ADGroupMember -Identity $deptAdminGroupSam -Members $samName -ErrorAction SilentlyContinue
+                                Add-ADGroupMember -Identity $deptAdminGroupSam -Members $samName -ErrorAction Stop
                                 $deptAdminAssigned[$dept] = $samName
+                                $expectedMemberships.Add([pscustomobject]@{ SamAccountName = $samName; GroupName = $deptAdminGroupSam })
                                 Write-ADAutoXConsole -Message "Delegated user '$samName' to Admin Group '$deptAdminGroupSam'" -Level Success
                             }
-                        } catch {}
+                        }
+                        catch {
+                            throw "Failed to add '$samName' to '$deptAdminGroupSam': $($_.Exception.Message)"
+                        }
                     }
                 }
             }
@@ -477,7 +502,24 @@ try {
                     switch ($entry.ObjectType) {
                         'User' {
                             $adObj = Get-ADUser -Identity $entry.DistinguishedName -Properties Enabled, Department -ErrorAction Stop
-                            if ($adObj -and $adObj.Enabled) { $verifiedCount++ } else { $failedCount++ }
+                            if ($adObj -and $adObj.Enabled) {
+                                $verifiedCount++
+                                $expectedMembershipsForUser = @($expectedMemberships | Where-Object { $_.SamAccountName -eq $entry.SamAccountName })
+                                foreach ($membership in $expectedMembershipsForUser) {
+                                    $group = Get-ADGroup -Identity $membership.GroupName -ErrorAction Stop
+                                    $groupMembers = @(Get-ADGroupMember -Identity $group.DistinguishedName -ErrorAction Stop)
+                                    if ($groupMembers.SamAccountName -contains $entry.SamAccountName) {
+                                        $verifiedCount++
+                                    }
+                                    else {
+                                        $failedCount++
+                                        Write-ADAutoXConsole -Message "Verification failed: '$($entry.SamAccountName)' is not a member of '$($membership.GroupName)'" -Level Error
+                                    }
+                                }
+                            }
+                            else {
+                                $failedCount++
+                            }
                         }
                         'Group' {
                             $adObj = Get-ADGroup -Identity $entry.DistinguishedName -ErrorAction Stop
@@ -491,10 +533,15 @@ try {
                 }
                 catch {
                     $failedCount++
+                    Write-ADAutoXConsole -Message "Verification failed for '$($entry.DistinguishedName)': $($_.Exception.Message)" -Level Error
                 }
             }
 
-            Write-ADAutoXConsole -Message "Active Directory Verification: $verifiedCount objects verified active in domain controller, $failedCount failed." -Level Success
+            if ($failedCount -gt 0) {
+                throw "Active Directory verification failed: $failedCount checks failed out of $($verifiedCount + $failedCount)."
+            }
+
+            Write-ADAutoXConsole -Message "Active Directory Verification: $verifiedCount objects verified active in domain controller; 0 failed." -Level Success
         }
         else {
             Write-ADAutoXConsole -Message "Verified directory consistency across $($reportRows.Count) evaluate/provision objects." -Level Success
@@ -503,20 +550,25 @@ try {
 
     # Phase 4: Reporting & Credential Export
     Write-ADAutoXConsole -Message "Phase 4: Reporting & Credential Export" -Level Phase
-    if (-not $WhatIfPreference -and $createdCredentials.Count -gt 0) {
-        Export-ADAutoXCredentials -CredentialMap $createdCredentials -OutputPath $PasswordFile -Overwrite
-        Write-ADAutoXConsole -Message "Exported DPAPI-protected credentials to: $PasswordFile" -Level Success
-    }
+    try {
+        if (-not $WhatIfPreference -and $createdCredentials.Count -gt 0) {
+            Export-ADAutoXCredentials -CredentialMap $createdCredentials -OutputPath $PasswordFile -Overwrite
+            Write-ADAutoXConsole -Message "Exported DPAPI-protected credentials to: $PasswordFile" -Level Success
+        }
 
-    if ($reportRows.Count -gt 0) {
-        $reportRows | Export-Csv -Path $ReportPath -NoTypeInformation -Encoding UTF8 -Force
-        if ($IncludePasswordInReport) {
-            Protect-ADAutoXFileAcl -Path $ReportPath
-            Write-ADAutoXConsole -Message "CSV Provisioning report written to: $ReportPath (Protected with User ACLs)" -Level Warning
+        if ($reportRows.Count -gt 0) {
+            $reportRows | Export-Csv -Path $ReportPath -NoTypeInformation -Encoding UTF8 -Force
+            if ($IncludePasswordInReport) {
+                Protect-ADAutoXFileAcl -Path $ReportPath
+                Write-ADAutoXConsole -Message "CSV Provisioning report written to: $ReportPath (Protected with User ACLs)" -Level Warning
+            }
+            else {
+                Write-ADAutoXConsole -Message "CSV Provisioning report written to: $ReportPath" -Level Success
+            }
         }
-        else {
-            Write-ADAutoXConsole -Message "CSV Provisioning report written to: $ReportPath" -Level Success
-        }
+    }
+    catch {
+        Write-ADAutoXConsole -Message "Reporting/export failed after provisioning: $($_.Exception.Message)" -Level Warning
     }
 
     Write-ADAutoXConsole -Message "ADAutoX Provisioning completed successfully! Total created: $($createdCredentials.Count)" -Level Phase

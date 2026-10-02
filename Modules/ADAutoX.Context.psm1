@@ -42,35 +42,39 @@ function Initialize-ADAutoXContext {
         [PSCredential]$Credential
     )
 
-    Import-Module ActiveDirectory -ErrorAction Stop
-    if (-not (Get-Command Get-ADDomain -ErrorAction SilentlyContinue)) {
-        throw 'The Active Directory PowerShell module is not available on this machine.'
-    }
+    try {
+        Import-Module ActiveDirectory -ErrorAction Stop
+        if (-not (Get-Command Get-ADDomain -ErrorAction SilentlyContinue)) {
+            throw 'The Active Directory PowerShell module is not available on this machine.'
+        }
 
-    # Save existing parameter defaults
-    $script:SavedDefaultParams = @{
-        Server = if ($global:PSDefaultParameterValues.ContainsKey('*-AD*:Server')) { $global:PSDefaultParameterValues['*-AD*:Server'] } else { $null }
-        Credential = if ($global:PSDefaultParameterValues.ContainsKey('*-AD*:Credential')) { $global:PSDefaultParameterValues['*-AD*:Credential'] } else { $null }
-    }
+        # Save existing parameter defaults
+        $script:SavedDefaultParams = @{
+            Server = if ($global:PSDefaultParameterValues.ContainsKey('*-AD*:Server')) { $global:PSDefaultParameterValues['*-AD*:Server'] } else { $null }
+            Credential = if ($global:PSDefaultParameterValues.ContainsKey('*-AD*:Credential')) { $global:PSDefaultParameterValues['*-AD*:Credential'] } else { $null }
+        }
 
-    [void]$global:PSDefaultParameterValues.Remove('*-AD*:Server')
-    [void]$global:PSDefaultParameterValues.Remove('*-AD*:Credential')
+        [void]$global:PSDefaultParameterValues.Remove('*-AD*:Server')
+        [void]$global:PSDefaultParameterValues.Remove('*-AD*:Credential')
 
-    $credentialContext = @{}
-    if ($Credential) {
-        $global:PSDefaultParameterValues['*-AD*:Credential'] = $Credential
-        $credentialContext.Credential = $Credential
-    }
+        $credentialContext = @{}
+        if ($Credential) {
+            $global:PSDefaultParameterValues['*-AD*:Credential'] = $Credential
+            $credentialContext.Credential = $Credential
+        }
 
-    $resolvedServer = $Server
-    if ([string]::IsNullOrWhiteSpace($resolvedServer)) {
-        $dc = Get-ADDomainController @credentialContext -Discover -Writable -ErrorAction Stop
-        $resolvedServer = [string]$dc.HostName
-    }
+        $resolvedServer = $Server
+        if ([string]::IsNullOrWhiteSpace($resolvedServer)) {
+            $dc = Get-ADDomainController @credentialContext -Discover -Writable -ErrorAction Stop
+            $resolvedServer = [string]$dc.HostName
+        }
 
-    $global:PSDefaultParameterValues['*-AD*:Server'] = $resolvedServer
+        $global:PSDefaultParameterValues['*-AD*:Server'] = $resolvedServer
 
-    if (-not (Get-PSDrive -Name AD -ErrorAction SilentlyContinue)) {
+        if (Get-PSDrive -Name AD -ErrorAction SilentlyContinue) {
+            Remove-PSDrive -Name AD -Force -ErrorAction SilentlyContinue
+        }
+
         $driveParams = @{
             Name       = 'AD'
             PSProvider = 'ActiveDirectory'
@@ -80,16 +84,20 @@ function Initialize-ADAutoXContext {
         if ($Credential) { $driveParams.Credential = $Credential }
         $null = New-PSDrive @driveParams -ErrorAction Stop
         $script:CreatedPSDrive = $true
-    }
 
-    $domainInfo = Get-ADDomain -Server $resolvedServer -ErrorAction Stop
-    return [pscustomobject]@{
-        Server         = $resolvedServer
-        DomainName     = $domainInfo.DNSRoot
-        Forest         = $domainInfo.Forest
-        DomainDN       = $domainInfo.DistinguishedName
-        NetBIOSName    = $domainInfo.NetBIOSName
-        UPNSuffixes    = $domainInfo.UPNSuffixes
+        $domainInfo = Get-ADDomain -Server $resolvedServer -ErrorAction Stop
+        return [pscustomobject]@{
+            Server         = $resolvedServer
+            DomainName     = $domainInfo.DNSRoot
+            Forest         = $domainInfo.Forest
+            DomainDN       = $domainInfo.DistinguishedName
+            NetBIOSName    = $domainInfo.NetBIOSName
+            UPNSuffixes    = $domainInfo.UPNSuffixes
+        }
+    }
+    catch {
+        Clear-ADAutoXContext
+        throw
     }
 }
 

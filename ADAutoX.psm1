@@ -17,4 +17,7 @@ foreach ($sub in $subModules) {
     if (Test-Path -LiteralPath $subPath) {
         Import-Module $subPath -Force
     }
+    else {
+        throw "Required module file not found: $subPath"
+    }
 }

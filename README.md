@@ -13,8 +13,8 @@ Designed as an architectural evolution over monolithic AD automation scripts, AD
 | **Architecture** | Monolithic script mixing logic & UI | Modular sub-modules (`Context`, `Sanitizer`, `Security`, `Provisioner`, `Reporting`) |
 | **Module Manifest** | None (`.psm1` only, no versioning or export controls) | Official Module Manifest (`ADAutoX.psd1` with versioning, exported functions, metadata) |
 | **Naming Conventions** | Mixed/humorous names | Standard PowerShell Verb-Noun Cmdlets (`Invoke-ADAutoXProvision`, `Reset-ADAutoXEnvironment`) |
-| **Rollback & Transaction** | Basic cleanup loop on failure | Persistent & In-memory Transactional Ledger (`Initialize-ADAutoXLedger`, `Invoke-ADAutoXLedgerRollback` with disk auto-save). Only logs objects created *during this run*, ensuring pre-existing AD resources are never touched on rollback. Enabled by default. |
-| **Group Provisioning** | Manual or missing | Automated creation of Department Security Groups (`<Dept>-Users`) and Delegated Admin Groups (`<Dept>-Admins`). |
+| **Rollback & Transaction** | Basic cleanup loop on failure | Persistent & In-memory Transactional Ledger (`Initialize-ADAutoXLedger`, `Invoke-ADAutoXLedgerRollback` with LocalAppData persistence). A new run refuses to start if a previous ledger is still pending unless you explicitly discard it. Only objects created during the current run are eligible for rollback. |
+| **Group Provisioning** | Manual or missing | Automated creation of Department Security Groups (`<Dept>-Users`), plus `<Dept>-Admins` when the switch is enabled and the first provisioned user is assigned to it. |
 | **Cryptographic Security** | Predictable RNG or modulo bias | Unbiased Rejection Sampling RNG (`Get-ADAutoXUnbiasedRandomInt`) and independent Fisher-Yates shuffle. |
 | **Unit Testing** | Syntax parser check | Standalone Automated Unit Test Harness (`Run-Tests.ps1`) testing sanitization, diacritics, crypto & cross-platform ACL safety. |
 | **Operator Experience** | Invoking loose standalone `.ps1` files | Interactive Control Console (`ControlConsole.ps1`) with menu-driven execution |
@@ -61,11 +61,11 @@ ADAutoX/
 - Objects that already exist in Active Directory (OUs, Groups, Users) are detected and skipped.
 - Only objects **actually created during the current execution** are added to the transaction ledger (`Add-ADAutoXLedgerEntry`).
 - Rollback only removes created objects, protecting pre-existing production OUs and users from accidental deletion.
-- Disk-backed ledger (`ADAutoX-Ledger.json`) preserves state across hard process crashes.
+- The ledger persists under LocalAppData and blocks a new run until an unresolved prior ledger is either rolled back or explicitly discarded.
 
 ### 2. Full Security Group Provisioning
 - Automatically creates Department Security Groups (`<Dept>-Users`) and places provisioned users inside.
-- Creates Delegated Admin Groups (`<Dept>-Admins`) when `-CreateDepartmentAdministrators` is set and assigns designated department leads.
+- Creates Delegated Admin Groups (`<Dept>-Admins`) when `-CreateDepartmentAdministrators` is set, and the first provisioned user in that department is assigned to it.
 
 ### 3. Real Multi-Phase Pipeline
 - **Phase 1 (Preflight)**: Actively queries Active Directory to check for existing OUs, security groups, and potential SAM account collisions before mutating state.

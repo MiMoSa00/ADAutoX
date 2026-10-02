@@ -32,6 +32,6 @@
         'Get-ADAutoXSecurityScan'
     )
     CmdletsToExport      = @()
-    VariablesToExport    = '*'
+    VariablesToExport    = @()
     AliasesToExport      = @()
 }

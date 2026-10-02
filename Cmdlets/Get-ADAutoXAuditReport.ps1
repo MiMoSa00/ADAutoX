@@ -36,12 +36,12 @@ if ([string]::IsNullOrWhiteSpace($AuditLogPath)) {
     $AuditLogPath = Join-Path $rootDir 'ADAutoX-Audit.jsonl'
 }
 
-$results = Get-ADAutoXAuditReport -LogPath $AuditLogPath `
-                                  -Identity $Identity `
-                                  -Action $Action `
-                                  -Status $Status `
-                                  -Actor $Actor `
-                                  -OutputPath $OutputPath
+$results = @(Get-ADAutoXAuditReport -LogPath $AuditLogPath `
+                                    -Identity $Identity `
+                                    -Action $Action `
+                                    -Status $Status `
+                                    -Actor $Actor `
+                                    -OutputPath $OutputPath)
 
 if ($results.Count -gt 0) {
     Write-ADAutoXConsole -Message "Displaying $($results.Count) matching audit entries:" -Level Phase

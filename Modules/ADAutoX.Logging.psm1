@@ -87,7 +87,12 @@ function Write-ADAutoXLogRecord {
     }
 
     $jsonLine = $record | ConvertTo-Json -Compress
-    $jsonLine | Add-Content -LiteralPath $LogPath -Encoding UTF8
+    try {
+        $jsonLine | Add-Content -LiteralPath $LogPath -Encoding UTF8
+    }
+    catch {
+        Write-ADAutoXConsole -Message "Failed to write audit log entry to '$LogPath': $($_.Exception.Message)" -Level Warning
+    }
 }
 
 Export-ModuleMember -Function New-ADAutoXCorrelationId, `

@@ -21,6 +21,8 @@ param(
 
     [string]$Reason = '',
 
+    [string]$PasswordFile = '',
+
     [string]$AuditLogPath = '',
 
     [string]$Server,
@@ -44,14 +46,14 @@ if ([string]::IsNullOrWhiteSpace($AuditLogPath)) {
 $correlationId = New-ADAutoXCorrelationId
 Write-ADAutoXConsole -Message "Lifecycle Action '$Action' requested for '$Identity' [CorrelationID: $correlationId]" -Level Info
 
-if ($WhatIfPreference) {
-    Write-ADAutoXConsole -Message "[WhatIf Mode] Previewing action '$Action' on user '$Identity'." -Level Warning
-    return
-}
-
 try {
     $adInfo = Initialize-ADAutoXContext -Server $Server -Credential $Credential
     $user = Get-ADUser -Identity $Identity -ErrorAction Stop
+
+    if ($WhatIfPreference) {
+        Write-ADAutoXConsole -Message "[WhatIf Mode] Previewing action '$Action' on existing user '$Identity' ($($user.DistinguishedName))." -Level Warning
+        return
+    }
 
     switch ($Action) {
         'Enable' {
@@ -80,8 +82,16 @@ try {
                 $newPwd = New-ADAutoXRandomPassword -Length 20
                 $secPwd = ConvertTo-SecureString $newPwd -AsPlainText -Force
                 Set-ADAccountPassword -Identity $user.DistinguishedName -NewPassword $secPwd -Reset -ErrorAction Stop
-                Write-ADAutoXConsole -Message "Password reset for '$Identity'. New Password: $newPwd" -Level Success
-                Write-ADAutoXLogRecord -LogPath $AuditLogPath -Action 'ResetPassword' -Target $user.DistinguishedName -Status 'Succeeded' -CorrelationId $correlationId
+
+                $effectivePasswordFile = if ([string]::IsNullOrWhiteSpace($PasswordFile)) {
+                    Join-Path $rootDir ((Get-Date).ToString('yyyyMMdd-HHmmss') + '-user-password-reset.clixml')
+                } else {
+                    $PasswordFile
+                }
+
+                Export-ADAutoXCredentials -CredentialMap @{ $user.SamAccountName = $newPwd } -OutputPath $effectivePasswordFile -Overwrite
+                Write-ADAutoXConsole -Message "Password reset for '$Identity'. Secure credential export stored at '$effectivePasswordFile'." -Level Success
+                Write-ADAutoXLogRecord -LogPath $AuditLogPath -Action 'ResetPassword' -Target $user.DistinguishedName -Status 'Succeeded' -Details "Password exported to $effectivePasswordFile" -CorrelationId $correlationId
             }
         }
         'Move' {
@@ -98,7 +108,9 @@ try {
             if ($PSCmdlet.ShouldProcess($user.DistinguishedName, 'Terminate AD User')) {
                 Disable-ADAccount -Identity $user.DistinguishedName -ErrorAction Stop
                 $note = "TERMINATED on $((Get-Date).ToString('yyyy-MM-dd'))" + $(if ($Reason) { " - Reason: $Reason" } else { '' })
-                Set-ADUser -Identity $user.DistinguishedName -Description $note -ErrorAction Stop
+                $existingDescription = if ($user.Description) { [string]$user.Description } else { '' }
+                $combinedDescription = if ([string]::IsNullOrWhiteSpace($existingDescription)) { $note } else { "$existingDescription; $note" }
+                Set-ADUser -Identity $user.DistinguishedName -Description $combinedDescription -ErrorAction Stop
                 if ($TargetOU) {
                     Move-ADObject -Identity $user.DistinguishedName -TargetPath $TargetOU -ErrorAction Stop
                 }
