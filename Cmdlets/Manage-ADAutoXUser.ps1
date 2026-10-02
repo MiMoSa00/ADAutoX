@@ -48,7 +48,7 @@ Write-ADAutoXConsole -Message "Lifecycle Action '$Action' requested for '$Identi
 
 try {
     $adInfo = Initialize-ADAutoXContext -Server $Server -Credential $Credential
-    $user = Get-ADUser -Identity $Identity -ErrorAction Stop
+    $user = Get-ADUser -Identity $Identity -Properties Description -ErrorAction Stop
 
     if ($WhatIfPreference) {
         Write-ADAutoXConsole -Message "[WhatIf Mode] Previewing action '$Action' on existing user '$Identity' ($($user.DistinguishedName))." -Level Warning

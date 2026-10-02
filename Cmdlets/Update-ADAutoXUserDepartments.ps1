@@ -18,22 +18,17 @@ $users = @(Get-ADUser -Filter * -SearchBase $SearchBase)
 Write-Host "Found $($users.Count) users under search base: $SearchBase" -ForegroundColor Cyan
 
 foreach ($user in $users) {
-    $dnSegments = @($user.DistinguishedName -split ',')
     $dept = $null
-    foreach ($segment in $dnSegments) {
-        if ($segment -match '^OU=') {
-            $candidate = $segment.Substring(3)
-            if ($candidate -notin @('Company', 'Staff', 'Users', 'Groups', 'Root')) {
-                $dept = $candidate
-                break
-            }
-        }
+    $companyName = $null
+    if ($user.DistinguishedName -match '(?:^|,)OU=Users,OU=([^,]+),OU=Staff,OU=([^,]+),') {
+        $dept = $Matches[1]
+        $companyName = $Matches[2]
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($dept)) {
+    if (-not [string]::IsNullOrWhiteSpace($dept) -and -not [string]::IsNullOrWhiteSpace($companyName)) {
         if ($PSCmdlet.ShouldProcess($user.DistinguishedName, "Update department/company attributes for $($user.SamAccountName)")) {
-            Set-ADUser -Identity $user.DistinguishedName -Department $dept -Company 'Company'
-            Write-Host "[+] Updated $($user.SamAccountName) -> Department: $dept, Company: Company" -ForegroundColor Green
+            Set-ADUser -Identity $user.DistinguishedName -Department $dept -Company $companyName
+            Write-Host "[+] Updated $($user.SamAccountName) -> Department: $dept, Company: $companyName" -ForegroundColor Green
         }
     }
     else {

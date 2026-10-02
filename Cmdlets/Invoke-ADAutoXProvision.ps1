@@ -76,8 +76,8 @@ if ([string]::IsNullOrWhiteSpace($PasswordFile)) {
 $correlationId = New-ADAutoXCorrelationId
 Write-ADAutoXConsole -Message "Starting ADAutoX Provisioning Session [CorrelationID: $correlationId]" -Level Phase
 
-if (Test-ADAutoXPendingLedger -and -not $DiscardPendingLedger) {
-    throw "A previous ADAutoX run left a pending rollback ledger in '$($script:LedgerFilePath)'. Resolve it with Invoke-ADAutoXLedgerRollback or rerun with -DiscardPendingLedger."
+if ((Test-ADAutoXPendingLedger) -and -not $DiscardPendingLedger) {
+    throw "A previous ADAutoX run left a pending rollback ledger in the LocalAppData ADAutoX folder. Resolve it with Invoke-ADAutoXLedgerRollback or rerun with -DiscardPendingLedger."
 }
 
 # Parse names file
@@ -343,7 +343,10 @@ try {
 
     # 4. Provision Users & Assign Group Memberships
     $deptIndex = 0
-    $countToCreate = if ($AccountCount -le 0) { 0 } elseif ($AccountCount -gt $namePairs.Count) { $namePairs.Count } else { $AccountCount }
+    if ($AccountCount -gt $namePairs.Count) {
+        Write-ADAutoXConsole -Message "Requested $AccountCount accounts, but only $($namePairs.Count) identity templates are available; using each template once." -Level Warning
+    }
+    $countToCreate = if ($AccountCount -eq 0) { $namePairs.Count } else { [Math]::Min($AccountCount, $namePairs.Count) }
 
     for ($i = 0; $i -lt $countToCreate; $i++) {
         $identity = $namePairs[$i % $namePairs.Count]
@@ -393,6 +396,7 @@ try {
 
                     New-ADUser @userCreationArgs
                     $userWasCreated = $true
+                    Add-ADAutoXLedgerEntry -ObjectType 'User' -DistinguishedName $userDN -SamAccountName $samName
 
                     # Add user to standard department security group
                     $deptUserGroupSam = "$dept-Users"
@@ -430,7 +434,9 @@ try {
 
             if ($userWasCreated) {
                 Write-ADAutoXConsole -Message "Provisioned User: $samName ($dept) -> $userDN" -Level Success
-                Add-ADAutoXLedgerEntry -ObjectType 'User' -DistinguishedName $userDN -SamAccountName $samName
+                if ($WhatIfPreference) {
+                    Add-ADAutoXLedgerEntry -ObjectType 'User' -DistinguishedName $userDN -SamAccountName $samName
+                }
                 $createdCredentials[$samName] = $userPassword
 
                 Write-ADAutoXLogRecord -LogPath $AuditLogPath `
@@ -508,7 +514,7 @@ try {
                                 foreach ($membership in $expectedMembershipsForUser) {
                                     $group = Get-ADGroup -Identity $membership.GroupName -ErrorAction Stop
                                     $groupMembers = @(Get-ADGroupMember -Identity $group.DistinguishedName -ErrorAction Stop)
-                                    if ($groupMembers.SamAccountName -contains $entry.SamAccountName) {
+                                    if ($groupMembers | Where-Object { $_.SamAccountName -eq $entry.SamAccountName }) {
                                         $verifiedCount++
                                     }
                                     else {
@@ -550,12 +556,12 @@ try {
 
     # Phase 4: Reporting & Credential Export
     Write-ADAutoXConsole -Message "Phase 4: Reporting & Credential Export" -Level Phase
-    try {
-        if (-not $WhatIfPreference -and $createdCredentials.Count -gt 0) {
-            Export-ADAutoXCredentials -CredentialMap $createdCredentials -OutputPath $PasswordFile -Overwrite
-            Write-ADAutoXConsole -Message "Exported DPAPI-protected credentials to: $PasswordFile" -Level Success
-        }
+    if (-not $WhatIfPreference -and $createdCredentials.Count -gt 0) {
+        Export-ADAutoXCredentials -CredentialMap $createdCredentials -OutputPath $PasswordFile -Overwrite -ErrorAction Stop
+        Write-ADAutoXConsole -Message "Exported DPAPI-protected credentials to: $PasswordFile" -Level Success
+    }
 
+    try {
         if ($reportRows.Count -gt 0) {
             $reportRows | Export-Csv -Path $ReportPath -NoTypeInformation -Encoding UTF8 -Force
             if ($IncludePasswordInReport) {
@@ -568,9 +574,10 @@ try {
         }
     }
     catch {
-        Write-ADAutoXConsole -Message "Reporting/export failed after provisioning: $($_.Exception.Message)" -Level Warning
+        Write-ADAutoXConsole -Message "CSV report generation failed after provisioning: $($_.Exception.Message)" -Level Warning
     }
 
+    Complete-ADAutoXLedger
     Write-ADAutoXConsole -Message "ADAutoX Provisioning completed successfully! Total created: $($createdCredentials.Count)" -Level Phase
 
 }

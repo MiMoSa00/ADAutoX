@@ -68,8 +68,19 @@ while ($true) {
             $inactiveDaysInput = Read-Host "Inactive days threshold (Default: 90)"
             $scanParams = @{}
             if ($searchBase) { $scanParams.SearchBase = $searchBase }
-            if ($inactiveDaysInput) { $scanParams.InactiveDays = [int]$inactiveDaysInput }
-            Get-ADAutoXSecurityScan @scanParams
+            if ($inactiveDaysInput) {
+                $inactiveDays = 0
+                if (-not [int]::TryParse($inactiveDaysInput, [ref]$inactiveDays) -or $inactiveDays -lt 1) {
+                    Write-Host "Inactive days must be a positive whole number." -ForegroundColor Red
+                }
+                else {
+                    $scanParams.InactiveDays = $inactiveDays
+                    Get-ADAutoXSecurityScan @scanParams
+                }
+            }
+            else {
+                Get-ADAutoXSecurityScan @scanParams
+            }
             Read-Host "`nPress Enter to return to menu..."
         }
         '5' {
@@ -77,7 +88,14 @@ while ($true) {
             $identity = Read-Host "Enter target SamAccountName (e.g. chinedu.okafor)"
             $action   = Read-Host "Enter Action (Enable, Disable, Unlock, ResetPassword, Move, Terminate)"
             if ($identity -and $action) {
-                powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Manage-ADAutoXUser.ps1') -Identity $identity -Action $action
+                $manageArgs = @('-Identity', $identity, '-Action', $action)
+                if ($action -in @('Move', 'Terminate')) {
+                    $targetOU = Read-Host "Target OU distinguished name (blank to keep current OU)"
+                    if (-not [string]::IsNullOrWhiteSpace($targetOU)) {
+                        $manageArgs += @('-TargetOU', $targetOU)
+                    }
+                }
+                powershell -ExecutionPolicy Bypass -File (Join-Path $rootDir 'Cmdlets\Manage-ADAutoXUser.ps1') @manageArgs
             }
             Read-Host "`nPress Enter to return to menu..."
         }
