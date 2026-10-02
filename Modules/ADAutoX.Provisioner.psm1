@@ -1,11 +1,12 @@
-﻿Set-StrictMode -Version Latest
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:Ledger = [System.Collections.Generic.List[psobject]]::new()
 
 function Get-ADAutoXLedgerFilePath {
     # Unique per-process so concurrent runs don't clobber each other (Bug #3 crash-recovery)
-    return Join-Path $env:TEMP "ADAutoX-Ledger-$($PID).json"
+    $tempDir = [System.IO.Path]::GetTempPath()
+    return Join-Path $tempDir "ADAutoX-Ledger-$($PID).json"
 }
 
 function Save-ADAutoXLedgerToDisk {

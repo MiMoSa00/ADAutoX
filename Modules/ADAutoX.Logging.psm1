@@ -1,4 +1,4 @@
-﻿Set-StrictMode -Version Latest
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:CurrentCorrelationId = [System.Guid]::NewGuid().ToString()
@@ -80,14 +80,22 @@ function Write-ADAutoXLogRecord {
             $isWindows = $env:OS -like '*Windows*'
         }
 
+        $computerName = [Environment]::MachineName
+        $userName     = [Environment]::UserName
+
         if ($isWindows) {
-            $actorName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            try {
+                $actorName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            } catch {
+                $actorName = "$computerName\$userName"
+            }
         } else {
-            $actorName = "$($env:COMPUTERNAME)\$($env:USER)"
+            $actorName = "$computerName\$userName"
         }
     }
     catch {
-        $actorName = [Environment]::UserName
+        $computerName = [Environment]::MachineName
+        $actorName    = [Environment]::UserName
     }
 
     $effectiveCorrelationId = if (-not [string]::IsNullOrWhiteSpace($CorrelationId)) { $CorrelationId } else { $script:CurrentCorrelationId }
@@ -96,7 +104,7 @@ function Write-ADAutoXLogRecord {
         Timestamp     = (Get-Date).ToUniversalTime().ToString('o')
         Actor         = $actorName
         Operator      = $actorName
-        Computer      = $env:COMPUTERNAME
+        Computer      = $computerName
         Action        = $Action
         Target        = $Target
         TargetType    = $TargetType
