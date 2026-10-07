@@ -9,7 +9,7 @@
 ADAutoX is a PowerShell framework built to solve a real problem: **enterprise-scale Active Directory automation is hard to do safely**. Most scripts are monolithic, have no rollback capability, and rely on brittle side effects. ADAutoX fixes that by introducing:
 
 - A **4-phase execution pipeline** (Preflight → Provision → Verify → Report)
-- A **persistent transactional rollback ledger** — if provisioning crashes midway, the state is recovered from disk and the partially created objects are cleaned up automatically
+- A **persistent transactional rollback ledger** — if provisioning crashes midway, the state is recovered from a secure per-user disk file and the partially created objects are cleaned up automatically (with full integrity checks and validation against the expected company OU).
 - **Modular architecture** with clean separation of concerns (6 sub-modules, each independently testable)
 - A **standalone unit test suite** that runs without a live domain controller
 
@@ -24,18 +24,19 @@ ADAutoX/
 ├── ControlConsole.ps1              ← Interactive CLI operator dashboard
 │
 ├── Modules/                        ← Core engine sub-modules
-│   ├── ADAutoX.Sanitizer.psm1      ← LDAP/DN escaping, diacritic stripping
-│   ├── ADAutoX.Logging.psm1        ← Structured JSONL audit logger (cross-platform)
-│   ├── ADAutoX.Security.psm1       ← Cryptographic password generation, DPAPI export
-│   ├── ADAutoX.Context.psm1        ← DC discovery, AD: drive lifecycle
-│   ├── ADAutoX.Provisioner.psm1    ← OU/Group builder, crash-safe rollback ledger
+│   ├── ADAutoX.Sanitizer.psm1      ← LDAP/DN escaping, diacritic stripping, custom transliteration
+│   ├── ADAutoX.Logging.psm1        ← Structured JSONL audit logger with retry and effective AD actor logging
+│   ├── ADAutoX.Security.psm1       ← Cryptographic password generation, DPAPI export, pre-write ACL locking
+│   ├── ADAutoX.Context.psm1        ← DC discovery, AD: drive lifecycle, safe splatting
+│   ├── ADAutoX.Provisioner.psm1    ← OU/Group builder, crash-safe HMAC-verified rollback ledger
 │   └── ADAutoX.Reporting.psm1      ← Audit log parser & security posture scanner
 │
 ├── Cmdlets/                        ← Standard Verb-Noun PowerShell tools
 │   ├── Invoke-ADAutoXProvision.ps1 ← Main provisioner (4-phase pipeline)
 │   ├── Reset-ADAutoXEnvironment.ps1← Controlled lab teardown
 │   ├── Get-ADAutoXAuditReport.ps1  ← Audit log viewer with filtering
-│   └── Manage-ADAutoXUser.ps1      ← User lifecycle (Enable/Disable/Unlock/Reset/Move/Terminate)
+│   ├── Manage-ADAutoXUser.ps1      ← User lifecycle (Enable/Disable/Unlock/Reset/Move/Terminate)
+│   └── Update-ADAutoXUserDepartments.ps1 ← Backfill script to populate Company/Department attributes
 │
 ├── Data/
 │   └── sample-names.txt            ← 35+ identity templates for bulk provisioning
@@ -54,14 +55,14 @@ ADAutoX/
 | :--- | :--- | :--- |
 | **Architecture** | Single monolithic `.ps1` | 6 sub-modules with enforced load order |
 | **Module Manifest** | None | `ADAutoX.psd1` v2.1.0 (locked exports, versioning) |
-| **Rollback / Crash Recovery** | None | Disk-backed ledger per process — crash-safe |
+| **Rollback / Crash Recovery** | None | Disk-backed, HMAC-protected ledger per process — crash-safe |
 | **Group Provisioning** | None | `<Dept>-Users` + `<Dept>-Admins` groups auto-created |
 | **Security: Password RNG** | Predictable modulo bias | Unbiased rejection-sampling + Fisher-Yates shuffle |
 | **Unit Testing** | None | 22 automated tests, zero AD dependency |
 | **Cross-Platform** | Windows-only | Runs on Windows, Linux, macOS (PowerShell 7+) |
 | **Audit Trail** | None | Structured JSONL log with CorrelationID per run |
 | **Operator UX** | Run scripts manually | Interactive Control Console (`ControlConsole.ps1`) |
-| **Credential Export** | None / plaintext risk | Timestamped DPAPI `.clixml` (Windows) or SecureString (cross-platform) |
+| **Credential Export** | None / plaintext risk | Timestamped DPAPI `.clixml` (Windows) or `chmod 600` (macOS/Linux). Restricted permissions applied *before* secrets are written. |
 
 ---
 
@@ -69,28 +70,33 @@ ADAutoX/
 
 ### 1. Idempotent Transactional Rollback Ledger
 - **Only objects created in this run** are ledgered — pre-existing AD objects survive any rollback intact.
-- The ledger is persisted to `%TEMP%\ADAutoX-Pending-Ledger.json` — if the PowerShell process is killed mid-run, the next run detects the orphaned file and offers recovery.
+- The ledger is persisted to a protected, per-user directory (`~/.adautox/ledgers/`) with a per-run filename (`ADAutoX-Ledger-<ID>.json`).
+- If the PowerShell process is killed mid-run, the next run detects the orphaned file and offers recovery.
+- The ledger is **HMAC-verified** and ensures every object's DN sits underneath the target company OU.
+- Rollback failures are properly caught and kept in the ledger for future retry.
 - OUs are deleted **deepest-first** (sorted by comma-count in DN) so parent OUs are never deleted before their children.
 
 ### 2. Full Security Group Provisioning
 - Auto-creates `<Dept>-Users` (member group) and `<Dept>-Admins` (delegated admin group) in a dedicated `Groups` sub-OU per department.
+- Uses exact DN lookups to prevent accidentally adopting pre-existing domain-wide groups unless explicitly requested via `-AdoptExistingGroups`.
 - Provisioned users are automatically added to their department group.
 - First user per department is optionally assigned to the Admins group.
 
 ### 3. 4-Phase Execution Pipeline
 | Phase | Name | What It Does |
 | :--- | :--- | :--- |
-| **1** | Preflight | Queries AD for existing OUs, groups, and SAM account collisions — no writes |
+| **1** | Preflight | Queries AD for existing OUs, groups, and SAM account collisions using shared parsing logic — no writes |
 | **2** | Provisioning | Creates OUs, Security Groups, User accounts; skips duplicates; logs everything |
-| **3** | Verification | Re-queries the DC to confirm every ledgered object was actually created — rolls back if anything is missing |
-| **4** | Reporting | Exports CSV report and timestamped credential file in its own isolated try/catch (a locked file does NOT trigger rollback) |
+| **3** | Verification | Re-queries the DC to confirm every ledgered object was actually created (including group memberships) — rolls back if anything is missing |
+| **4** | Reporting | Exports CSV report and timestamped credential file. Protects files before writing to avoid TOCTOU races, and sanitizes CSV fields against formula injection. A failure to export credentials halts execution so passwords are not silently lost. |
 
 ### 4. Unbiased Cryptographic Password Generation
-Standard `Get-Random` has modulo bias when the character pool size doesn't divide evenly into `[int]::MaxValue`. ADAutoX uses a **rejection-sampling loop** over `[System.Security.Cryptography.RandomNumberGenerator]` to eliminate this bias, followed by an independent Fisher-Yates shuffle.
+Standard `Get-Random` has modulo bias when the character pool size doesn't divide evenly into `[int]::MaxValue`. ADAutoX uses a **rejection-sampling loop** over `[System.Security.Cryptography.RandomNumberGenerator]` to eliminate this bias, followed by an independent Fisher-Yates shuffle. All accounts force password change at logon.
 
 ### 5. Cross-Platform Identity & Logging
 - `[WindowsIdentity]::GetCurrent()` is guarded behind an OS check — on Linux/macOS it falls back to `[Environment]::UserName` / `[Environment]::MachineName`.
-- `Add-Content` failures in the logger degrade to a `Warning` — a full disk or locked log file never aborts an already-completed provisioning operation.
+- AD context separates local operator identity from AD operational credentials, so you know exactly who authorized the script vs who it connected to AD as.
+- `Add-Content` failures in the logger retry, falling back gracefully so a full disk never aborts an already-completed provisioning operation.
 
 ---
 
@@ -111,7 +117,7 @@ All 4 phases run. Every AD operation is printed as `What if: ...` — nothing is
 
 ### Step 3 — Launch the Interactive Console
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\ControlConsole.ps1
+.\ControlConsole.ps1
 ```
 
 ### Step 4 — Live Provisioning (requires AD / RSAT)

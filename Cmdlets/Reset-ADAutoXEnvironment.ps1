@@ -125,7 +125,36 @@ try {
         }
 
         Write-ADAutoXConsole -Message "Deleting entire OU structure '$targetDN'..." -Level Warning
+        
+        # BUG-31: List and log each object before deletion
+        try {
+            $objectsToDelete = @(Get-ADObject -Filter * -SearchBase $targetDN -ErrorAction Stop | Sort-Object DistinguishedName -Descending)
+            foreach ($obj in $objectsToDelete) {
+                Write-ADAutoXLogRecord -LogPath $AuditLogPath `
+                                       -Action 'DeleteObject' `
+                                       -Target $obj.DistinguishedName `
+                                       -TargetType $obj.ObjectClass `
+                                       -Status 'Started' `
+                                       -Message "Deleting $($obj.ObjectClass): $($obj.Name)" `
+                                       -CorrelationId $correlationId
+            }
+        } catch {
+            Write-ADAutoXConsole -Message "Could not enumerate objects for detailed audit logging: $($_.Exception.Message)" -Level Warning
+        }
+
         Remove-ADOrganizationalUnit -Identity $targetDN -Recursive -Confirm:$false -ErrorAction Stop
+
+        if ($null -ne $objectsToDelete) {
+            foreach ($obj in $objectsToDelete) {
+                Write-ADAutoXLogRecord -LogPath $AuditLogPath `
+                                       -Action 'DeleteObject' `
+                                       -Target $obj.DistinguishedName `
+                                       -TargetType $obj.ObjectClass `
+                                       -Status 'Succeeded' `
+                                       -Message "Deleted $($obj.ObjectClass): $($obj.Name)" `
+                                       -CorrelationId $correlationId
+            }
+        }
 
         Write-ADAutoXLogRecord -LogPath $AuditLogPath `
                                -Action 'ResetEnvironment' `

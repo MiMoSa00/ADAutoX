@@ -1,4 +1,4 @@
-﻿Set-StrictMode -Version Latest
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Get-ADAutoXAuditReport {
@@ -41,7 +41,19 @@ function Get-ADAutoXAuditReport {
     })
 
     if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
-        $filtered | Export-Csv -Path $OutputPath -NoTypeInformation -Encoding UTF8 -Force
+        # BUG-40: sanitize all string cell values to prevent CSV formula injection
+        $sanitized = $filtered | ForEach-Object {
+            $row = [ordered]@{}
+            foreach ($prop in $_.PSObject.Properties) {
+                $val = $prop.Value
+                if ($val -is [string]) {
+                    $val = Protect-ADAutoXCsvCell -Value $val
+                }
+                $row[$prop.Name] = $val
+            }
+            [pscustomobject]$row
+        }
+        $sanitized | Export-Csv -Path $OutputPath -NoTypeInformation -Encoding UTF8 -Force
         Write-ADAutoXConsole -Message "Audit report exported to '$OutputPath' ($($filtered.Count) entries)." -Level Success
     }
 
@@ -60,26 +72,53 @@ function Get-ADAutoXSecurityScan {
 
     Write-ADAutoXConsole -Message 'Executing AD Security & Posture Scan...' -Level Info
 
-    # Locked out users
-    $lockedUsers = @(Get-ADUser @params -Filter 'LockedOut -eq $true' -Properties LockedOut, AccountExpirationDate, LastLogonDate, Department)
-    
+    # BUG-27: LockedOut is a computed attribute — 'LockedOut -eq $true' LDAP filter is unreliable.
+    # Microsoft's correct approach is Search-ADAccount -LockedOut.
+    $lockedUsers = @()
+    if (Get-Command Search-ADAccount -ErrorAction SilentlyContinue) {
+        try {
+            $searchParams = @{}
+            if ($SearchBase) { $searchParams.SearchBase = $SearchBase }
+            $lockedUsers = @(Search-ADAccount -LockedOut @searchParams |
+                             Get-ADUser -Properties LockedOut, AccountExpirationDate, LastLogonDate, Department -ErrorAction SilentlyContinue)
+        }
+        catch {
+            Write-ADAutoXConsole -Message "Could not query locked accounts via Search-ADAccount: $($_.Exception.Message)" -Level Warning
+        }
+    }
+    else {
+        Write-ADAutoXConsole -Message "Search-ADAccount is not available; locked account count will not be reported." -Level Warning
+    }
+
     # Password never expires
-    $neverExpires = @(Get-ADUser @params -Filter 'PasswordNeverExpires -eq $true' -Properties PasswordNeverExpires, Enabled, Department)
+    $neverExpires = @()
+    try {
+        $neverExpires = @(Get-ADUser @params -Filter 'PasswordNeverExpires -eq $true' -Properties PasswordNeverExpires, Enabled, Department -ErrorAction Stop)
+    }
+    catch {
+        Write-ADAutoXConsole -Message "Could not query password-never-expires accounts: $($_.Exception.Message)" -Level Warning
+    }
 
     # Inactive users
-    $threshold = (Get-Date).AddDays(-$InactiveDays)
-    $inactiveUsers = @(Get-ADUser @params -Filter 'Enabled -eq $true' -Properties LastLogonDate, Department | Where-Object {
-        $null -ne $_.LastLogonDate -and $_.LastLogonDate -lt $threshold
-    })
+    $inactiveUsers = @()
+    try {
+        $threshold = (Get-Date).AddDays(-$InactiveDays)
+        $inactiveUsers = @(Get-ADUser @params -Filter 'Enabled -eq $true' -Properties LastLogonDate, Department -ErrorAction Stop | Where-Object {
+            $null -ne $_.LastLogonDate -and $_.LastLogonDate -lt $threshold
+        })
+    }
+    catch {
+        Write-ADAutoXConsole -Message "Could not query inactive accounts: $($_.Exception.Message)" -Level Warning
+    }
 
     $result = [pscustomobject]@{
-        Timestamp               = (Get-Date).ToUniversalTime().ToString('o')
-        LockedOutAccountsCount  = $lockedUsers.Count
+        Timestamp                 = (Get-Date).ToUniversalTime().ToString('o')
+        LockedOutAccountsCount    = $lockedUsers.Count
         PasswordNeverExpiresCount = $neverExpires.Count
-        InactiveAccountsCount   = $inactiveUsers.Count
-        LockedUsers             = $lockedUsers
-        NeverExpiresUsers       = $neverExpires
-        InactiveUsers           = $inactiveUsers
+        InactiveAccountsCount     = $inactiveUsers.Count
+        LockedUsers               = $lockedUsers
+        NeverExpiresUsers         = $neverExpires
+        InactiveUsers             = $inactiveUsers
     }
 
     Write-ADAutoXConsole -Message "Security Scan Completed: $($lockedUsers.Count) locked accounts, $($neverExpires.Count) password-never-expires, $($inactiveUsers.Count) inactive accounts (> $InactiveDays days)." -Level Success

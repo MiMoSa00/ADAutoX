@@ -29,7 +29,6 @@ function Show-ADAutoXMenu {
     Write-Host "==========================================================================" -ForegroundColor Cyan
 }
 
-# Bug #13 (console loop): handle EOF gracefully so the loop terminates on piped/automated runs
 while ($true) {
     Show-ADAutoXMenu
 
@@ -46,14 +45,14 @@ while ($true) {
     switch ($choice) {
         '1' {
             Write-Host "`n[Preview Provisioning Mode]" -ForegroundColor Yellow
-            # Bug #13 (console crashes on bad input): wrap int conversion
             $countInput = Read-Host "Enter number of accounts to preview (Default: 5)"
             $count = 5
             if ($countInput) {
                 try { $count = [int]$countInput }
                 catch { Write-Host "Invalid number, using default 5." -ForegroundColor Yellow }
             }
-            powershell -ExecutionPolicy Bypass -File (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Invoke-ADAutoXProvision.ps1') -AccountCount $count -WhatIf
+            # BUG-34: Run in-process with & instead of spawning a new bypass process
+            & (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Invoke-ADAutoXProvision.ps1') -AccountCount $count -WhatIf
             Read-Host "`nPress Enter to return to menu..."
         }
         '2' {
@@ -64,29 +63,27 @@ while ($true) {
                 try { $count = [int]$countInput }
                 catch { Write-Host "Invalid number, using default 20." -ForegroundColor Yellow }
             }
-            powershell -ExecutionPolicy Bypass -File (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Invoke-ADAutoXProvision.ps1') -AccountCount $count -RollbackOnFailure
+            & (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Invoke-ADAutoXProvision.ps1') -AccountCount $count -RollbackOnFailure
             Read-Host "`nPress Enter to return to menu..."
         }
         '3' {
             Write-Host "`n[Audit Log Viewer]" -ForegroundColor White
-            # Bug #17: expose filtering options consistently
             $filterAction   = Read-Host "Filter by Action (e.g. CreateUser, ResetPassword) - leave blank for all"
             $filterStatus   = Read-Host "Filter by Status (e.g. Succeeded, Failed, Skipped) - leave blank for all"
             $filterIdentity = Read-Host "Filter by Identity (partial DN or name match) - leave blank for all"
             $showFull       = Read-Host "Show full record details? (y/n, default n)"
 
-            $auditArgs = @("-File", (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Get-ADAutoXAuditReport.ps1'))
-            if ($filterAction)   { $auditArgs += @('-Action', $filterAction) }
-            if ($filterStatus)   { $auditArgs += @('-Status', $filterStatus) }
-            if ($filterIdentity) { $auditArgs += @('-Identity', $filterIdentity) }
-            if ($showFull -eq 'y') { $auditArgs += '-Full' }
+            $auditArgs = @{}
+            if ($filterAction)   { $auditArgs['Action'] = $filterAction }
+            if ($filterStatus)   { $auditArgs['Status'] = $filterStatus }
+            if ($filterIdentity) { $auditArgs['Identity'] = $filterIdentity }
+            if ($showFull -eq 'y') { $auditArgs['Full'] = $true }
 
-            powershell -ExecutionPolicy Bypass @auditArgs
+            & (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Get-ADAutoXAuditReport.ps1') @auditArgs
             Read-Host "`nPress Enter to return to menu..."
         }
         '4' {
             Write-Host "`n[Security Posture Scan]" -ForegroundColor White
-            # Bug #17: expose scan options consistently
             $searchBase  = Read-Host "Enter SearchBase DN (leave blank for domain root)"
             $inactiveDays = Read-Host "Flag accounts inactive for how many days? (Default: 90)"
             $days = 90
@@ -103,30 +100,57 @@ while ($true) {
         '5' {
             Write-Host "`n[Manage User Lifecycle]" -ForegroundColor White
             $identity = Read-Host "Enter target SamAccountName (e.g. chinedu.okafor)"
-            # Bug #18: all 6 actions listed including Move
-            $action   = Read-Host "Enter Action (Enable, Disable, Unlock, ResetPassword, Move, Terminate)"
+            
+            # BUG-33: Show the six valid actions as a menu
+            Write-Host "Valid Actions: Enable, Disable, Unlock, ResetPassword, Move, Terminate"
+            $action = Read-Host "Enter Action"
+            
             if ($identity -and $action) {
-                powershell -ExecutionPolicy Bypass -File (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Manage-ADAutoXUser.ps1') -Identity $identity -Action $action
+                $manageArgs = @{
+                    Identity = $identity
+                    Action   = $action
+                }
+                
+                # BUG-33: Ask for extra parameters based on action
+                if ($action -ieq 'Move') {
+                    $targetOu = Read-Host "Enter Target OU for Move"
+                    $manageArgs['TargetOU'] = $targetOu
+                }
+                elseif ($action -ieq 'Terminate') {
+                    $targetOu = Read-Host "Enter Target OU for Terminate (Optional, leave blank to just disable)"
+                    if ($targetOu) { $manageArgs['TargetOU'] = $targetOu }
+                    $reason = Read-Host "Enter Termination Reason (Optional)"
+                    if ($reason) { $manageArgs['Reason'] = $reason }
+                }
+
+                & (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Manage-ADAutoXUser.ps1') @manageArgs
             }
             Read-Host "`nPress Enter to return to menu..."
         }
         '6' {
             Write-Host "`n[Reset / Teardown Lab Environment]" -ForegroundColor Red
-            Write-Host "This operation will RECURSIVELY DELETE the entire OU structure and all users, groups, and OUs inside it." -ForegroundColor Red
+            
+            # BUG-32: Ask for OU name and offer WhatIf preview
+            $ouName = Read-Host "Enter the name of the root Company OU to delete (Default: Company)"
+            if ([string]::IsNullOrWhiteSpace($ouName)) { $ouName = 'Company' }
+            
+            Write-Host "Previewing deletion..." -ForegroundColor Yellow
+            & (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Reset-ADAutoXEnvironment.ps1') -CompanyOuName $ouName -WhatIf
 
-            # Bug #16: case-sensitive comparison using -ceq
-            $confirm = Read-Host "Type exactly 'DELETE' (uppercase) to confirm"
-            if ($confirm -ceq 'DELETE') {
-                powershell -ExecutionPolicy Bypass -File (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Reset-ADAutoXEnvironment.ps1') -AllowDestructiveOperation
+            Write-Host "`nThis operation will RECURSIVELY DELETE the entire '$ouName' OU structure and all users, groups, and OUs inside it." -ForegroundColor Red
+            
+            $confirm = Read-Host "Type exactly '$ouName' to confirm deletion"
+            if ($confirm -ceq $ouName) {
+                & (Join-Path -Path $rootDir -ChildPath 'Cmdlets\Reset-ADAutoXEnvironment.ps1') -CompanyOuName $ouName -AllowDestructiveOperation
             }
             else {
-                Write-Host "Reset cancelled. (Tip: type DELETE in uppercase to confirm.)" -ForegroundColor Yellow
+                Write-Host "Reset cancelled. (Tip: type exactly the OU name to confirm.)" -ForegroundColor Yellow
             }
             Read-Host "`nPress Enter to return to menu..."
         }
         '7' {
             Write-Host "`n[Running ADAutoX Unit Test Suite]" -ForegroundColor Magenta
-            powershell -ExecutionPolicy Bypass -File (Join-Path -Path $rootDir -ChildPath 'Tests\Run-Tests.ps1')
+            & (Join-Path -Path $rootDir -ChildPath 'Tests\Run-Tests.ps1')
             Read-Host "`nPress Enter to return to menu..."
         }
         '8' {

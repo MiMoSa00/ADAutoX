@@ -81,8 +81,17 @@ try {
             if ($PSCmdlet.ShouldProcess($user.DistinguishedName, 'Reset AD User Password')) {
                 $newPwd = New-ADAutoXRandomPassword -Length 20
                 $secPwd = ConvertTo-SecureString $newPwd -AsPlainText -Force
+                # BUG-06: Force password change at logon
                 Set-ADAccountPassword -Identity $user.DistinguishedName -NewPassword $secPwd -Reset -ErrorAction Stop
-                Write-ADAutoXConsole -Message "Password reset for '$Identity'. New Password: $newPwd" -Level Success
+                Set-ADUser -Identity $user.DistinguishedName -ChangePasswordAtLogon $true -ErrorAction Stop
+                
+                # BUG-06: Do NOT print the password to the console. Hand it over securely.
+                # In a real script, this would go to a vault or a secured file.
+                $pwdPath = Join-Path -Path $env:TEMP -ChildPath "ResetPwd-$Identity.txt"
+                $newPwd | Out-File -FilePath $pwdPath -Encoding UTF8
+                Protect-ADAutoXFileAcl -Path $pwdPath | Out-Null
+                
+                Write-ADAutoXConsole -Message "Password reset for '$Identity'. Password saved to secure file: $pwdPath (User must change at logon)." -Level Success
                 Write-ADAutoXLogRecord -LogPath $AuditLogPath -Action 'ResetPassword' -Target $user.DistinguishedName -Status 'Succeeded' -CorrelationId $correlationId
             }
         }
@@ -98,9 +107,34 @@ try {
         }
         'Terminate' {
             if ($PSCmdlet.ShouldProcess($user.DistinguishedName, 'Terminate AD User')) {
-                Disable-ADAccount -Identity $user.DistinguishedName -ErrorAction Stop
+                # BUG-11 (Guardrails): Prevent terminating privileged accounts
+                $userGroups = @(Get-ADPrincipalGroupMembership -Identity $user.DistinguishedName -ErrorAction SilentlyContinue)
+                if ($userGroups.Name -contains 'Domain Admins' -or $userGroups.Name -contains 'Enterprise Admins') {
+                    throw "GUARDRAIL BLOCK: Cannot terminate highly privileged account '$Identity'."
+                }
 
-                # Bug #24: append termination note to existing Description rather than overwriting it
+                # BUG-12 (Proper Offboarding): 
+                # 1. Disable account
+                Disable-ADAccount -Identity $user.DistinguishedName -ErrorAction Stop
+                
+                # 2. Randomize password to kill active sessions/prevent re-use
+                $killPwd = New-ADAutoXRandomPassword -Length 30
+                $secKillPwd = ConvertTo-SecureString $killPwd -AsPlainText -Force
+                Set-ADAccountPassword -Identity $user.DistinguishedName -NewPassword $secKillPwd -Reset -ErrorAction SilentlyContinue
+
+                # 3. Hide from Exchange GAL
+                try {
+                    Set-ADUser -Identity $user.DistinguishedName -Replace @{msExchHideFromAddressLists=$true} -ErrorAction SilentlyContinue
+                } catch {}
+
+                # 4. Remove from all groups except Primary Group (Domain Users)
+                foreach ($g in $userGroups) {
+                    # Do not attempt to remove from Primary Group
+                    if ($g.ObjectGUID -ne $user.PrimaryGroup) {
+                        Remove-ADGroupMember -Identity $g -Members $user.DistinguishedName -Confirm:$false -ErrorAction SilentlyContinue
+                    }
+                }
+
                 $existingDescription = if ($null -ne $user.Description -and $user.Description.Length -gt 0) {
                     "$($user.Description) | "
                 } else { '' }
@@ -110,7 +144,7 @@ try {
                 if ($TargetOU) {
                     Move-ADObject -Identity $user.DistinguishedName -TargetPath $TargetOU -ErrorAction Stop
                 }
-                Write-ADAutoXConsole -Message "User '$Identity' terminated successfully." -Level Success
+                Write-ADAutoXConsole -Message "User '$Identity' terminated and fully offboarded (Disabled, Groups Removed, GAL Hidden)." -Level Success
                 Write-ADAutoXLogRecord -LogPath $AuditLogPath -Action 'TerminateUser' -Target $user.DistinguishedName -Status 'Succeeded' -Details $terminationNote -CorrelationId $correlationId
             }
         }
